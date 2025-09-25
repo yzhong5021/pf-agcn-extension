@@ -22,14 +22,6 @@ This project aims to:
 - Evaluation metrics
 - Ablation analysis
 
-## Quickstart
-
-1) Clone, set up environment
-
-```
-git clone 
-```
-
 ## Reference
 Original paper: PF-AGCN: An Adaptive Graph Convolutional Network for Protein Function Prediction
 https://doi.org/10.1093/bioinformatics/btaf473
