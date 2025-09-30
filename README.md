@@ -13,6 +13,7 @@ This project aims to:
 - Toy data generator (sequences + GO terms)
 - Mock ESM (sequence embedding + linear)
 - Dilated Causal CNN + gating
+- Merging sequence embeddings + pooling
 - Testing notebook
 
 ## To-do
@@ -21,14 +22,6 @@ This project aims to:
 - Training loop + Loss
 - Evaluation metrics
 - Ablation analysis
-
-## Quickstart
-
-1) Clone, set up environment
-
-```
-git clone 
-```
 
 ## Reference
 Original paper: PF-AGCN: An Adaptive Graph Convolutional Network for Protein Function Prediction

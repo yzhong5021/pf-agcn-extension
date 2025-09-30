@@ -1,7 +1,7 @@
 """
 attention.py
 
-self-attention module for PPI and GO relationships + top-K sparsification
+self-attention module for protein similarity and GO relationships + top-K sparsification
 """
 
 from re import L
@@ -11,7 +11,7 @@ import pytorch.nn.functional as F
 
 class GeneralAttention(nn.Module):
     f"""
-    general attention mechanism for both PPI and GO relationships. Creates a correlation network between nodes.
+    general attention mechanism for both protein similarity and GO relationships. Creates a correlation network between nodes.
     networks are computed as:
     F = V_f * softmax((X_h^(r-1)U_1)U_2(U_3X_h^(r-1)) + b)
     """
