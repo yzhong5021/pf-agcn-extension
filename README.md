@@ -13,7 +13,7 @@ This project aims to:
 - Toy data generator (sequences + GO terms)
 - Mock ESM (sequence embedding + linear)
 - Dilated Causal CNN + gating
-- Merging sequence embeddings + pooling
+- Merging sequence embeddings for GO-centric representations + adaptive pooling
 - Testing notebook
 
 ## To-do
