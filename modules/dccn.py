@@ -9,7 +9,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-
 class DCCN_1D(nn.Module):
     """
         args:
@@ -20,7 +19,7 @@ class DCCN_1D(nn.Module):
         - dropout (float): dropout rate
     """
 
-    def __init__(self, embed_len:int, k_size:int = 3, dilation:int = 2, dropout:float = 0.1):
+    def __init__(self, embed_len = 24, k_size = 3, dilation = 2, dropout = 0.1):
         super().__init__()
 
         self.c = embed_len
@@ -37,6 +36,17 @@ class DCCN_1D(nn.Module):
         self.dropouts = nn.ModuleList([nn.Dropout(dropout) for _ in self.dilations])
 
         self.gating = nn.Conv1d(in_channels = 4 * self.c, out_channels = 4 * self.c, kernel_size = 1) #dilation channelwise linear gating
+
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        for conv in self.convs:
+            nn.init.kaiming_normal_(conv.weight, mode="fan_out", nonlinearity="relu")
+            if conv.bias is not None:
+                nn.init.zeros_(conv.bias)
+        nn.init.xavier_uniform_(self.gating.weight)
+        if self.gating.bias is not None:
+            nn.init.zeros_(self.gating.bias)
 
     def _causal_pad(self, x, dilation):
         # causal masking via left padding
@@ -61,7 +71,7 @@ class DCCN_1D(nn.Module):
             y = y + y_prev # add residual for stability
             y_prev = y
             qs.append(y) #apply convolution
-        
+
         # gating
         q_concat = torch.cat(qs, dim = 1)
 

@@ -14,7 +14,6 @@ class SeqFinal(nn.Module):
         self.met_proj  = nn.Linear(in_dim, proj, bias=True) # project to metric space
 
         self.G = nn.Parameter(torch.empty(N_C, proj))
-        nn.init.xavier_uniform_(self.G) # parameter stability
 
         comp_in = 4*proj
         self.mlp = nn.Sequential(
@@ -24,11 +23,25 @@ class SeqFinal(nn.Module):
         )
         self.norm = nn.LayerNorm(out_ch)
 
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        nn.init.xavier_uniform_(self.met_proj.weight)
+        nn.init.zeros_(self.met_proj.bias)
+
+        nn.init.xavier_uniform_(self.G)
+
+        for layer in self.mlp:
+            if isinstance(layer, nn.Linear):
+                nn.init.xavier_uniform_(layer.weight)
+                nn.init.zeros_(layer.bias)
+
     def prot_proj(self, x):  # protein-protein: (N_P, d) -> (N_P, N_P, C)
         a = self.met_proj(x)                  # (N_P, proj)
-        A = a[:, None, :]                      # (N_P, 1, proj)
-        B = a[None, :, :]                      # (1, N_P, proj)
+        A = a[:, None, :].expand(a.size(0), a.size(0), -1)                      # (N_P, N_P, proj)
+        B = a[None, :, :].expand(a.size(0), a.size(0), -1)                      # (N_P, N_P, proj)
 
+        print(A.shape, B.shape)
         comp = torch.cat([A, B, (A-B).abs(), A*B], dim=-1)  # (N_P,N_P,4*proj); learn simple distance/agreement metrics
 
         return self.norm(self.mlp(comp)) # (N_P, N_P, C)

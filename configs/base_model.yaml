@@ -1,0 +1,27 @@
+# base_model.yaml
+# default PF-AGCN hyperparameters used as Optuna baselines.
+
+seq_encoder:
+  name: mock_esm
+  seq_len: 512
+  embed_dim: 1280
+  hidden_dim: 2048
+  proj_dim: 320
+
+model:
+  shared_dim: 256
+  graph_dim: 256
+  metric_dim: 128
+  dccn_channels: 128
+  dccn_kernel: 3
+  dccn_dilation: 2
+  dropout: 0.1
+  protein_steps: 3
+  function_steps: 2
+  graph_keep_mass: 0.9
+  graph_tau: 1.0
+
+task:
+  num_functions: 2048
+  pad_index: 0
+  vocab_size: 21
