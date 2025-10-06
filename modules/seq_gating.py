@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 
 class SeqGating(nn.Module):
-    def __init__(self, d_shared = 128, d_esm=1280, c_dcc=256, attn_hidden=128, dropout=0.1):
+    def __init__(self, d_shared = 128, d_esm=1280, c_dcc=24, attn_hidden=128, dropout=0.1):
         super().__init__()
 
         #project embeddings to d_shared
@@ -24,12 +24,30 @@ class SeqGating(nn.Module):
         self.dropout  = nn.Dropout(dropout)
         self.ln       = nn.LayerNorm(d_shared)
 
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        nn.init.xavier_uniform_(self.proj_esm.weight)
+        nn.init.xavier_uniform_(self.proj_dcc.weight)
+
+        nn.init.xavier_uniform_(self.gate_tok.weight)
+        nn.init.zeros_(self.gate_tok.bias)
+
+        scorer_in = self.scorer[0]
+        nn.init.kaiming_uniform_(scorer_in.weight, nonlinearity="relu")
+        nn.init.zeros_(scorer_in.bias)
+
+        scorer_out = self.scorer[2]
+        nn.init.xavier_uniform_(scorer_out.weight)
+        nn.init.zeros_(scorer_out.bias)
+
     def forward(self, H_esm, H_dcc, lengths):  # (N,L,1280),(N,L,C_dcc),(N,)
         N, L, _ = H_esm.shape # N = batch size, L = max sequence length
         mask = (torch.arange(L, device=H_esm.device)[None,:] < lengths[:,None]).unsqueeze(-1)  # masking sequence length
 
         # project esm and dcc embeddings to shared d_shared dimension
         E = self.dropout(self.proj_esm(H_esm))
+
         D = self.dropout(self.proj_dcc(H_dcc))   # both (N,L,d_shared)
 
         G = torch.sigmoid(self.gate_tok(torch.cat([E, D], dim=-1)))  # (N,L,d_shared) ; generate token-wise gating weights

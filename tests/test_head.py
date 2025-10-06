@@ -1,35 +1,20 @@
+﻿"""test_head.py
+
+Quick checks for ClassificationHead.
 """
-test_head.py
 
-Stub tests for head module (currently incomplete)
-"""
+import torch
 
-import pytest
-from modules import head
+from modules.head import ClassificationHead
 
 
-class TestHead:
-    
-    def test_module_exists(self):
-        # Basic test that module can be imported
-        assert head is not None
-    
-    def test_module_docstring(self):
-        # Check that module has expected docstring
-        expected_content = "feature fusion + classification head"
-        assert expected_content in head.__doc__
-    
-    def test_placeholder_for_future_implementation(self):
-        # Placeholder for when head module is implemented
-        # TODO: Add comprehensive tests when module contains actual classes/functions
-        pytest.skip("Head module not yet implemented")
-    
-    # Future test structure when module is implemented:
-    # def test_feature_fusion_mechanism(self):
-    #     pass
-    # 
-    # def test_classification_head_output_shape(self):
-    #     pass
-    #
-    # def test_multi_class_prediction(self):
-    #     pass
+def test_logits_shape():
+    torch.manual_seed(0)
+    head = ClassificationHead(N_C=7, d_in=12, dropout=0.0)
+    function_feats = torch.randn(7, 12)
+    protein_feats = torch.randn(4, 12)
+
+    logits = head(function_feats, protein_feats)
+
+    assert logits.shape == (4, 7)
+    assert torch.isfinite(logits).all()

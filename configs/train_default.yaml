@@ -1,0 +1,34 @@
+# train_default.yaml
+# baseline training schedule + logging knobs for PF-AGCN.
+
+training:
+  seed: 17
+  max_epochs: 80
+  gradient_clip: 1.0
+  precision: 32
+  accumulate_batches: 1
+  log_interval: 50
+
+optimizer:
+  name: adamw
+  lr: 0.0005
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+
+scheduler:
+  name: cosine
+  warmup_epochs: 5
+  min_lr: 0.000005
+
+data:
+  train_manifest: data/toy/train.json
+  val_manifest: data/toy/val.json
+  batch_size: 8
+  num_workers: 4
+  pin_memory: true
+  drop_last: false
+
+evaluation:
+  metric: fmax
+  val_interval: 1
+  threshold_grid: [0.1, 0.3, 0.5, 0.7]

@@ -16,6 +16,15 @@ class MockESM(nn.Module):
         self.layer1 = nn.Linear(embed_len, hidden_len)
         self.relu = nn.ReLU()
         self.layer2 = nn.Linear(hidden_len, proj_len)
+
+        self._reset_parameters()
+    
+    def _reset_parameters(self) -> None:
+        nn.init.normal_(self.embed.weight, mean=0.0, std=self.embed.embedding_dim ** -0.5)
+        nn.init.kaiming_uniform_(self.layer1.weight, nonlinearity="relu")
+        nn.init.zeros_(self.layer1.bias)
+        nn.init.xavier_uniform_(self.layer2.weight)
+        nn.init.zeros_(self.layer2.bias)
     
     def forward(self, seqs):
         x = self.embed(seqs)
