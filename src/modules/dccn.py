@@ -4,6 +4,8 @@ dccn.py
 1-D dilated causal convolutional network (WaveNet). Called after sequences are embedded by ESM-1b.
 """
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -52,9 +54,18 @@ class DCCN_1D(nn.Module):
         # causal masking via left padding
         return F.pad(x, ((self.k-1)*dilation, 0))
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         # x = B, L, C where B = batch size, L = sequence length, C = embedding length
         xt = x.transpose(1,2) # set up for cnn
+
+        mask_expanded = None
+        if mask is not None:
+            if mask.ndim != 2:
+                raise ValueError("mask must be 2D (batch, length).")
+            if mask.shape[0] != x.size(0) or mask.shape[1] != x.size(1):
+                raise ValueError("mask must match the batch and sequence dimensions of x.")
+            mask_expanded = mask.to(device=x.device, dtype=x.dtype).unsqueeze(1)
+            xt = xt * mask_expanded
 
         qs = []
 
@@ -69,6 +80,8 @@ class DCCN_1D(nn.Module):
             y = drop(y)
             y = y.transpose(1,2)
             y = y + y_prev # add residual for stability
+            if mask_expanded is not None:
+                y = y * mask_expanded
             y_prev = y
             qs.append(y) #apply convolution
 
@@ -84,6 +97,7 @@ class DCCN_1D(nn.Module):
 
         out = out + xt # add in residual skip
 
+        if mask_expanded is not None:
+            out = out * mask_expanded
+
         return out.transpose(1, 2) # revert back to B, L, C
-
-

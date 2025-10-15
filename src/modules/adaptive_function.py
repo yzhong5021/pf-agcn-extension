@@ -1,4 +1,4 @@
-# adaptive_function.py
+﻿# adaptive_function.py
 #
 # adaptive graphs through bilinear attention module + top-p sparsification
 # for function (GO) similarity/hierarchy; UNIDIRECTIONAL graph diffusion
@@ -8,6 +8,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from utils.adaptive_helpers import (
+    _init_attention_layers,
+    _init_linear_stack,
+    _build_top_p_attention,
+    _prepare_prior,
+)
 
 class AdaptiveFunctionBlock(nn.Module):
     def __init__(self, d_in, d_attn=64, steps=2, p=0.9, tau=1.0, dropout=0.1):
@@ -30,12 +36,9 @@ class AdaptiveFunctionBlock(nn.Module):
         self._init_weights()
 
     def _init_weights(self) -> None:
-        nn.init.xavier_uniform_(self.W1.weight)
-        nn.init.xavier_uniform_(self.W2.weight)
-        nn.init.xavier_uniform_(self.W3.weight)
+        _init_attention_layers(self.W1, self.W2, self.W3)
         for ml in (self.U1, self.U2):
-            for lin in ml:
-                nn.init.xavier_uniform_(lin.weight)
+            _init_linear_stack(ml)
 
     def _adj_from_feats(self, X):
         """
@@ -44,27 +47,7 @@ class AdaptiveFunctionBlock(nn.Module):
         Returns:
             A: (N_C, N_C) row-stochastic attention with fixed p-mass sparsity
         """
-        Q, K = self.W1(X), self.W3(X)  # (N_C, d_attn)
-        logits = (Q @ self.W2.weight @ K.T) / self.tau  # (N_C, N_C)
-
-        # fixed p-mass cutoff for graph sparsity (per-row)
-        vals, idx = torch.sort(logits, dim=1, descending=True)      # sorted rowwise
-        probs_sorted = F.softmax(vals, dim=1)                        # convert to probs to cumulate mass
-        csum = torch.cumsum(probs_sorted, dim=1)
-        k_i = (csum < self.p).sum(dim=1) + 1                         # keep minimum K covering p-mass
-
-        N = logits.size(1)
-        ranks = torch.arange(N, device=logits.device).unsqueeze(0).expand_as(vals)
-        keep_sorted = ranks < k_i.unsqueeze(1)
-
-        # map mask back to original index order
-        neg_inf = vals.new_full(vals.shape, float('-inf'))
-        masked_sorted = torch.where(keep_sorted, vals, neg_inf)
-        masked = logits.new_full(logits.shape, float('-inf'))
-        masked.scatter_(1, idx, masked_sorted)
-
-        A = F.softmax(masked, dim=1)  # row-stochastic after masking
-        return A
+        return _build_top_p_attention(self.W1, self.W2, self.W3, X, self.tau, self.p)
 
     def forward(self, X, S=None):
         """
@@ -80,16 +63,7 @@ class AdaptiveFunctionBlock(nn.Module):
 
         # construct row-stochastic forward prior matrix (with self-loops)
         N, device, dtype = X.size(0), X.device, X.dtype
-        if S is None:
-            S = torch.eye(N, device=device, dtype=dtype)
-        else:
-            S = S.to(device=device, dtype=dtype)
-
-        I = torch.eye(S.size(0), device=S.device, dtype=dtype)
-        S = S + I  # add self loops
-
-        rowsum = S.sum(dim=1, keepdim=True).clamp_min(1e-12)
-        R = S / rowsum  # forward-only diffusion
+        R = _prepare_prior(S, N, device, dtype, bidirectional=False)
 
         # states
         Xf = X.clone()  # prior-forward state

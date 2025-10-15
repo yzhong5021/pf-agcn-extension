@@ -2,7 +2,7 @@
 # baseline training schedule + logging knobs for PF-AGCN.
 
 training:
-  seed: 17
+  seed: 10
   max_epochs: 80
   gradient_clip: 1.0
   precision: 32

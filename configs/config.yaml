@@ -1,0 +1,12 @@
+# default config stack
+
+defaults:
+  - data: uniprot_kb
+  - model: pf_agcn_base
+  - train: default
+  - eval: cafa
+  - system: local
+  - _self_
+
+experiment_name: "pfagcn_dev"
+resume: false

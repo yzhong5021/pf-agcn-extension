@@ -1,7 +1,7 @@
 """
 loss.py
 
-evaluate + BCE with logits loss
+BCE with logits loss
 """
 
 import torch

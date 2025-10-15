@@ -4,6 +4,8 @@ seq_gating.py
 gating mechanism for esm + dccn embeddings (capture both local and global sequence context)
 """
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
 
@@ -41,20 +43,44 @@ class SeqGating(nn.Module):
         nn.init.xavier_uniform_(scorer_out.weight)
         nn.init.zeros_(scorer_out.bias)
 
-    def forward(self, H_esm, H_dcc, lengths):  # (N,L,1280),(N,L,C_dcc),(N,)
+    def forward(
+        self,
+        H_esm: torch.Tensor,
+        H_dcc: torch.Tensor,
+        lengths: Optional[torch.Tensor] = None,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:  # (N,L,1280),(N,L,C_dcc)
         N, L, _ = H_esm.shape # N = batch size, L = max sequence length
-        mask = (torch.arange(L, device=H_esm.device)[None,:] < lengths[:,None]).unsqueeze(-1)  # masking sequence length
+
+        if mask is not None:
+            if mask.shape != (N, L):
+                raise ValueError("mask must be shaped (batch, length).")
+            mask_bool = mask.to(device=H_esm.device, dtype=torch.bool)
+            lengths = mask_bool.sum(dim=1, dtype=torch.long)
+        else:
+            if lengths is None:
+                raise ValueError("Either lengths or mask must be provided.")
+            lengths = lengths.to(device=H_esm.device, dtype=torch.long)
+            mask_bool = (
+                torch.arange(L, device=H_esm.device)[None, :] < lengths[:, None]
+            )
+
+        mask_expanded = mask_bool.unsqueeze(-1)
 
         # project esm and dcc embeddings to shared d_shared dimension
         E = self.dropout(self.proj_esm(H_esm))
 
         D = self.dropout(self.proj_dcc(H_dcc))   # both (N,L,d_shared)
 
+        E = E.masked_fill(~mask_expanded, 0.0)
+        D = D.masked_fill(~mask_expanded, 0.0)
+
         G = torch.sigmoid(self.gate_tok(torch.cat([E, D], dim=-1)))  # (N,L,d_shared) ; generate token-wise gating weights
         H = G*E + (1.0-G)*D                                          # (N,L,d_shared) ; fuse esm and dcc embeddings
+        H = H.masked_fill(~mask_expanded, 0.0)
 
         scores = self.scorer(H)                                      # (N,L,1) ; score each token for attention-based pooling
-        scores = scores.masked_fill(~mask, float('-inf'))
+        scores = scores.masked_fill(~mask_expanded, float('-inf'))
         w = torch.softmax(scores, dim=1)                             # normalize
         w = torch.nan_to_num(w, nan=0.0)
         x = (H * w).sum(dim=1)                                       # (N,d_shared) ; pooled embedding

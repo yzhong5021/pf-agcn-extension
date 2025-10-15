@@ -22,22 +22,22 @@ search_space:
     low: 0.0001
     high: 0.05
     log: true
-  model.dropout:
+  model.seq_gating.dropout:
     type: float
     low: 0.05
     high: 0.35
-  model.shared_dim:
+  model.seq_gating.shared_dim:
     type: categorical
     choices: [128, 192, 256, 320]
-  model.graph_keep_mass:
+  model.adaptive_protein.top_p_mass:
     type: float
     low: 0.6
     high: 0.95
-  model.protein_steps:
+  model.adaptive_protein.steps:
     type: int
     low: 2
     high: 4
-  model.function_steps:
+  model.adaptive_function.steps:
     type: int
     low: 1
     high: 3

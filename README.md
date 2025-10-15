@@ -13,13 +13,13 @@ This project aims to:
 - Toy data generator (sequences + GO terms)
 - Mock ESM (sequence embedding + linear)
 - Dilated Causal CNN + gating
-- Merging sequence embeddings for GO-centric representations + adaptive pooling
+- Merging sequence embeddings for protein & GO-centric representations + adaptive pooling
+- Adaptive function/protein attention
+- Loss/training loop
 - Testing notebook
 
 ## To-do
 - GO DAG prior generator
-- Adaptive function/protein attention
-- Training loop + Loss
 - Evaluation metrics
 - Ablation analysis
 
