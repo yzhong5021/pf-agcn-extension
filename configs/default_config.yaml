@@ -1,10 +1,12 @@
 # default config stack
 
 defaults:
-  - data: uniprot_kb
+  - data: cafa
   - model: pf_agcn_base
-  - train: default
+  - train: train_default
   - eval: cafa
+  - hpo: optuna_search
+  - 
   - system: local
   - _self_
 
