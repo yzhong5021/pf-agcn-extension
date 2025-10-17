@@ -10,7 +10,7 @@ class ESM_Embed(nn.Module):
     def __init__(self, model_name="facebook/esm1b_t33_650M_UR50S", max_len=1000):
         super().__init__()
         self.tokenizer = EsmTokenizer.from_pretrained(model_name)
-        self.model = EsmModel.from_pretrained(model_name)   # load weights
+        self.model = EsmModel.from_pretrained(model_name)
         self.model.eval()
         for p in self.model.parameters():
             p.requires_grad = False

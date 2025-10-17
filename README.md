@@ -15,12 +15,12 @@ This project aims to:
 - Dilated Causal CNN + gating
 - Merging sequence embeddings for protein & GO-centric representations + adaptive pooling
 - Adaptive function/protein attention
+- GO DAG prior generator
 - Loss/training loop
+- Evaluation metrics (CAFA)
 - Testing notebook
 
 ## To-do
-- GO DAG prior generator
-- Evaluation metrics
 - Ablation analysis
 
 ## Reference

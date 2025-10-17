@@ -1,4 +1,4 @@
-"""PF-AGCN architecture definition.
+﻿"""PF-AGCN architecture definition.
 
 Implements the dilated-conv → sequence projection → adaptive graph workflow
 using cached sequence embeddings and priors supplied at runtime.
@@ -22,7 +22,7 @@ from modules.seq_gating import SeqGating
 
 
 @dataclass
-class PFAGCNOutput:
+class Output:
     """Container returned by the model forward pass."""
 
     logits: torch.Tensor
@@ -35,9 +35,8 @@ class PFAGCNOutput:
 class PFAGCN(nn.Module):
     """Protein Function Adaptive Graph Convolutional Network.
 
-    The architecture consumes cached sequence embeddings and optional graph
-    priors, routing features through a DCCN stack, sequence-to-graph projection,
-    adaptive refinement blocks, and a bilinear head.
+    Complete architecture:
+    Sequence embeddings -> DCCN -> ESM + DCCN representational gating -> adaptive protein/function blocks -> classification head
     """
 
     def __init__(self, config: PFAGCNConfig) -> None:
@@ -116,12 +115,11 @@ class PFAGCN(nn.Module):
     def forward(
         self,
         seq_embeddings: torch.Tensor,
-        *,
         lengths: Optional[torch.Tensor] = None,
         mask: Optional[torch.Tensor] = None,
         protein_prior: Optional[torch.Tensor] = None,
         go_prior: Optional[torch.Tensor] = None,
-    ) -> PFAGCNOutput:
+    ) -> Output:
         """Run end-to-end inference with cached sequence embeddings."""
 
         if seq_embeddings.ndim != 3:
@@ -165,7 +163,7 @@ class PFAGCN(nn.Module):
             protein_embeddings, function_embeddings
         )
 
-        return PFAGCNOutput(
+        return Output(
             logits=logits,
             protein_embeddings=protein_embeddings,
             function_embeddings=function_embeddings,
