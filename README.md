@@ -23,6 +23,12 @@ This project aims to:
 ## To-do
 - Ablation analysis
 
+## Low-Compute Local Stack
+- Run `python -m src.train.training --config-name default_config_low_compute` after activating the env to smoke-test the full pipeline within 12 GB RAM and two loader workers.
+- Hydra logs and artifacts land under `results/local_low/` so multiple dry runs stay organised.
+- `python scripts/main.py train` auto-builds a manifest from CAFA URLs when none are configured.
+- Provide an aspect flag (MF/BP/CC) via --aspect to train or predict dedicated models; manifests land under data/manifests/{train,val,test} with aspect-specific priors.
+
 ## Reference
 Original paper: PF-AGCN: An Adaptive Graph Convolutional Network for Protein Function Prediction
 https://doi.org/10.1093/bioinformatics/btaf473

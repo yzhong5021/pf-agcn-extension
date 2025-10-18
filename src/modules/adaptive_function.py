@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from utils.adaptive_helpers import (
+from src.utils.adaptive_helpers import (
     _init_attention_layers,
     _init_linear_stack,
     _build_top_p_attention,

@@ -1,0 +1,52 @@
+﻿# configs/model/pf_agcn_compact.yaml
+# Reduced PF-AGCN footprint for local smoke tests.
+
+seq_embeddings:
+  cache_path: null
+  feature_dim: 128
+  seq_len: 512
+  dtype: float32
+prot_prior:
+  cache_path: null
+  top_p_mass: 0.9
+  temperature: 1.0
+  symmetric: true
+go_prior:
+  cache_path: null
+  top_p_mass: 0.9
+  temperature: 1.0
+  symmetric: true
+dccn:
+  channels: 64
+  kernel_size: 3
+  dilation: 2
+  dropout: 0.1
+seq_gating:
+  shared_dim: 128
+  esm_dim: 128
+  dccn_channels: 64
+  attn_hidden: 128
+  dropout: 0.1
+seq_final:
+  metric_dim: 64
+  graph_dim: 128
+adaptive_protein:
+  feature_dim: 128
+  attention_dim: 128
+  steps: 2
+  top_p_mass: 0.9
+  temperature: 1.0
+  dropout: 0.1
+adaptive_function:
+  feature_dim: 128
+  attention_dim: 128
+  steps: 1
+  top_p_mass: 0.9
+  temperature: 1.0
+  dropout: 0.1
+head:
+  feature_dim: 128
+  dropout: 0.1
+loss:
+  name: bce_with_logits
+  pos_weight: null
