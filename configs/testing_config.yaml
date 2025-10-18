@@ -1,0 +1,24 @@
+﻿# configs/default_config_low_compute.yaml
+# Default stack for low-compute local end-to-end testing.
+
+defaults:
+  - data_config: test
+  - task: pf_agcn
+  - model: pf_agcn_compact
+  - train@_here_: train_low_compute
+  - eval: test
+  - hpo: optuna_search
+  - system: local_low
+  - _self_
+
+experiment_name: "pfagcn_local_low"
+resume: false
+
+training: {}
+optimizer: {}
+scheduler: {}
+data: {}
+evaluation: {}
+
+aspect: null
+

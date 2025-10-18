@@ -7,18 +7,21 @@ using cached sequence embeddings and priors supplied at runtime.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import torch
 import torch.nn as nn
 
-from model.config import PFAGCNConfig
-from modules.adaptive_function import AdaptiveFunctionBlock
-from modules.adaptive_protein import AdaptiveProteinBlock
-from modules.dccn import DCCN_1D
-from modules.head import ClassificationHead
-from modules.seq_final import SeqFinal
-from modules.seq_gating import SeqGating
+try:
+    from model.config import PFAGCNConfig  # type: ignore
+except ImportError:  # pragma: no cover
+    from typing import Any as PFAGCNConfig  # type: ignore
+from src.modules.adaptive_function import AdaptiveFunctionBlock
+from src.modules.adaptive_protein import AdaptiveProteinBlock
+from src.modules.dccn import DCCN_1D
+from src.modules.head import ClassificationHead
+from src.modules.seq_final import SeqFinal
+from src.modules.seq_gating import SeqGating
 
 
 @dataclass

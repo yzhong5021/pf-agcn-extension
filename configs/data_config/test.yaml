@@ -1,0 +1,29 @@
+# paths and parameters for cafa data
+sources:
+  seqs_train_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\toy_train.fasta
+  terms_train_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\terms_train_toy.tsv
+  seqs_val_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\toy_val.fasta
+  terms_val_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\terms_val_toy.tsv
+  seqs_test_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\toy_test.fasta
+  terms_test_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\terms_test_toy.tsv  # optional override
+  ia_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\ia.txt  # optional override
+  go_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\go-basic.obo  # optional override
+
+train_csv: data/splits/train.csv
+val_csv:   data/splits/val.csv
+test_csv:  data/splits/test.csv
+embeddings_npz: ${system.cache_dir}/esm1b_cafa.npz
+go_prior_npz:   ${system.cache_dir}/go_prior_cafa.npz
+
+go_prior:
+  obo_path: ${hydra:runtime.cwd}/data/ontology/go-basic.obo
+  train_split_csv: ${..train_csv}
+  top_k:
+    MF: 100
+    BP: 100
+    CC: 100
+
+batch_size: 64
+train_manifest: null
+val_manifest: null
+test_manifest: null

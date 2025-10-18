@@ -1,0 +1,45 @@
+﻿# @package _global_
+# configs/train/train_low_compute.yaml
+# Training schedule tuned for <=12GB RAM and <=8-thread local smoke tests.
+
+training:
+  seed: 10
+  max_epochs: 3
+  gradient_clip: 1.0
+  precision: 32
+  accumulate_batches: 1
+  log_interval: 10
+  devices: 1
+  accelerator: auto
+  strategy: null
+  deterministic: true
+  enable_progress_bar: true
+  limit_train_batches: 0.5
+  limit_val_batches: 1.0
+  fast_dev_run: false
+
+optimizer:
+  name: adamw
+  lr: 0.001
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+
+scheduler:
+  name: cosine
+  warmup_epochs: 1
+  min_lr: 0.00005
+
+data:
+  train_manifest: null
+  val_manifest: null
+  test_manifest: null
+  batch_size: 4
+  num_workers: 2
+  pin_memory: false
+  drop_last: false
+
+evaluation:
+  metric: fmax
+  val_interval: 1
+  threshold_grid: [0.3, 0.5, 0.7]
+

@@ -1,13 +1,10 @@
-"""Data ingestion utilities for PF-AGCN.
+"""
+dataloader.py
 
-This module centralises all dataset- and dataloader-related logic so that
-src/train/training.py only orchestrates optimisation. It provides helper
-functions for reading raw CAFA-format artefacts (ground truths, FASTA
-sequences, IA weights) with pandas as well as utilities for loading cached
-tensor bundles (.npz/.pt). Both raw and cached pathways feed into
-torch.utils.data.Dataset implementations that can be wrapped by
-torch.utils.data.DataLoader instances for training, validation, or
-inference.
+Data processing utilities. Contains all dataset- and dataloader-related logic. It provides helper
+functions for reading raw CAFA-format data sources (ground truths, FASTA
+sequences, IA weights) as well as utilities for loading cached
+tensors via manifests.
 """
 
 from __future__ import annotations
@@ -34,10 +31,7 @@ def _ensure_logger() -> Any:
     return log
 
 
-# ---------------------------------------------------------------------------
-# Raw-data loading helpers
-# ---------------------------------------------------------------------------
-
+####### RAW DATA LOADERS #######
 
 def parse_ground_truth_table(path: Path) -> pd.DataFrame:
     """Load CAFA ground-truth annotations into a dataframe.
@@ -155,184 +149,11 @@ def dataframe_to_multi_hot(
     return label_map
 
 
-# ---------------------------------------------------------------------------
-# Cached tensor loading helpers
-# ---------------------------------------------------------------------------
-
-
-def load_npz_tensor(path: Path, key: str | None = None) -> torch.Tensor:
-    """Load a tensor from .npz/.npy/.pt files.
-
-    The loader accepts numpy and torch serialisations, normalising everything to
-    torch.float32 tensors for use in training.
-    """
-
-    if not path.exists():
-        raise FileNotFoundError(f"Tensor file not found: {path}")
-
-    suffix = path.suffix.lower()
-    if suffix in {".pt", ".pth"}:
-        payload = torch.load(path, map_location="cpu")
-        if isinstance(payload, torch.Tensor):
-            return payload.to(dtype=torch.float32)
-        if isinstance(payload, Mapping):
-            if key is None:
-                raise KeyError(
-                    f"File {path} stores a mapping; please provide 'key' to select a tensor."
-                )
-            tensor = payload.get(key)
-            if tensor is None:
-                raise KeyError(f"Key '{key}' missing from {path.name}")
-            return tensor.to(dtype=torch.float32)
-        raise TypeError(f"Unsupported payload in {path}: {type(payload)}")
-
-    if suffix == ".npy":
-        array = np.load(path)
-        return torch.from_numpy(array).to(dtype=torch.float32)
-
-    if suffix == ".npz":
-        archive = np.load(path)
-        array_key = key or "arr_0"
-        if array_key not in archive:
-            raise KeyError(
-                f"Key '{array_key}' not found in {path.name}; available={list(archive.keys())}"
-            )
-        return torch.from_numpy(archive[array_key]).to(dtype=torch.float32)
-
-    raise ValueError(f"Unsupported tensor file extension: {suffix}")
-
-
-# ---------------------------------------------------------------------------
-# Dataset definitions
-# ---------------------------------------------------------------------------
-
-
-class ManifestDataset(Dataset):
-    """Dataset backed by a JSON/JSONL manifest of cached embeddings.
-
-    Each record must provide at least a labels field (multi-hot array or
-    path to a persisted tensor) and one of embedding or embedding_path.
-    Optional fields include lengths, protein_prior (or
-    protein_prior_path), and go_prior (or go_prior_path).
-    """
-
-    def __init__(self, manifest_path: Path) -> None:
-        self.manifest_path = manifest_path
-        self.records = self._load_manifest(manifest_path)
-        if not self.records:
-            raise ValueError(f"Manifest {manifest_path} did not yield any records.")
-
-    def __len__(self) -> int:
-        return len(self.records)
-
-    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
-        record = self.records[index]
-        seq_embeddings = self._load_embedding(record)
-        labels = self._load_tensor(record, key="labels")
-        sample: Dict[str, torch.Tensor] = {
-            "seq_embeddings": seq_embeddings,
-            "targets": labels.to(dtype=torch.float32),
-        }
-
-        if "lengths" in record:
-            sample["lengths"] = self._load_tensor(record, key="lengths").to(torch.long)
-
-        protein_prior = self._load_optional_tensor(record, base_key="protein_prior")
-        if protein_prior is not None:
-            sample["protein_prior"] = protein_prior
-
-        go_prior = self._load_optional_tensor(record, base_key="go_prior")
-        if go_prior is not None:
-            sample["go_prior"] = go_prior
-
-        return sample
-
-    # Internal helpers -----------------------------------------------------
-
-    def _load_manifest(self, path: Path) -> list[Dict[str, Any]]:
-        if not path.exists():
-            raise FileNotFoundError(f"Manifest not found: {path}")
-        suffix = path.suffix.lower()
-        if suffix in {".jsonl", ".jsonl.gz"}:
-            return self._read_json_lines(path)
-        if suffix == ".json":
-            return self._read_json(path)
-        raise ValueError(f"Unsupported manifest format: {path.suffix}")
-
-    def _read_json(self, path: Path) -> list[Dict[str, Any]]:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict) and "records" in data:
-            records = data["records"]
-            if not isinstance(records, list):
-                raise TypeError("records must be a list of manifest entries")
-            return records
-        raise TypeError("JSON manifest must be a list or wrap a 'records' list")
-
-    def _read_json_lines(self, path: Path) -> list[Dict[str, Any]]:
-        records: list[Dict[str, Any]] = []
-        with path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                records.append(json.loads(line))
-        return records
-
-    def _load_embedding(self, record: Mapping[str, Any]) -> torch.Tensor:
-        if "embedding_path" in record:
-            emb_path = Path(record["embedding_path"])
-            tensor = self._load_array_from_path(emb_path, key=record.get("embedding_key"))
-        elif "embedding" in record:
-            tensor = torch.tensor(record["embedding"], dtype=torch.float32)
-        else:
-            raise KeyError("Manifest record must include embedding info")
-
-        if tensor.ndim != 2:
-            raise ValueError("Embeddings must be 2D (length, feature_dim)")
-        return tensor
-
-    def _load_tensor(self, record: Mapping[str, Any], key: str) -> torch.Tensor:
-        if key in record:
-            value = record[key]
-            if isinstance(value, (list, tuple)):
-                return torch.tensor(value)
-            if isinstance(value, (int, float)):
-                return torch.tensor([value])
-            if isinstance(value, str):
-                return self._load_array_from_path(Path(value))
-            if isinstance(value, np.ndarray):
-                return torch.from_numpy(value)
-            if isinstance(value, torch.Tensor):
-                return value
-            raise TypeError(f"Unsupported value type for {key}: {type(value)}")
-        path_key = f"{key}_path"
-        if path_key in record:
-            return self._load_array_from_path(Path(record[path_key]))
-        raise KeyError(f"Manifest record missing '{key}' or '{path_key}'")
-
-    def _load_optional_tensor(
-        self, record: Mapping[str, Any], base_key: str
-    ) -> Optional[torch.Tensor]:
-        try:
-            return self._load_tensor(record, key=base_key).to(dtype=torch.float32)
-        except KeyError:
-            return None
-
-    def _load_array_from_path(self, path: Path, key: Optional[str] = None) -> torch.Tensor:
-        if not path.is_absolute():
-            path = (self.manifest_path.parent / path).resolve()
-        return load_npz_tensor(path, key)
-
-
 class SequenceAnnotationDataset(Dataset):
     """Dataset yielding raw sequences and GO annotations.
 
     The dataset accepts a dataframe containing sequences (from FASTA) and a
-    mapping of entry IDs to GO term lists or multi-hot vectors. It is useful
-    for pre-processing pipelines that still need to operate with PyTorch data
-    abstractions before embeddings are generated.
+    mapping of entry IDs to GO term lists or multi-hot vectors.
     """
 
     def __init__(
@@ -381,9 +202,152 @@ class SequenceAnnotationDataset(Dataset):
         return sample
 
 
-# ---------------------------------------------------------------------------
-# Collate + DataLoader builders
-# ---------------------------------------------------------------------------
+###### HELPERS FOR CACHED DATA ######
+
+def load_npz_tensor(path: Path, key: str | None = None) -> torch.Tensor:
+    """Load a tensor from .npz/.npy/.pt files.
+
+    The loader accepts numpy and torch serialisations, normalising everything to
+    torch.float32 tensors for use in training.
+    """
+
+    if not path.exists():
+        raise FileNotFoundError(f"Tensor file not found: {path}")
+
+    suffix = path.suffix.lower()
+    if suffix in {".pt", ".pth"}:
+        payload = torch.load(path, map_location="cpu")
+        if isinstance(payload, torch.Tensor):
+            return payload.to(dtype=torch.float32)
+        if isinstance(payload, Mapping):
+            if key is None:
+                raise KeyError(
+                    f"File {path} stores a mapping; please provide 'key' to select a tensor."
+                )
+            tensor = payload.get(key)
+            if tensor is None:
+                raise KeyError(f"Key '{key}' missing from {path.name}")
+            return tensor.to(dtype=torch.float32)
+        raise TypeError(f"Unsupported payload in {path}: {type(payload)}")
+
+    if suffix == ".npy":
+        array = np.load(path)
+        return torch.from_numpy(array).to(dtype=torch.float32)
+
+    if suffix == ".npz":
+        archive = np.load(path)
+        array_key = key or "arr_0"
+        if array_key not in archive:
+            raise KeyError(
+                f"Key '{array_key}' not found in {path.name}; available={list(archive.keys())}"
+            )
+        return torch.from_numpy(archive[array_key]).to(dtype=torch.float32)
+
+    raise ValueError(f"Unsupported tensor file extension: {suffix}")
+
+
+class ManifestDataset(Dataset):
+    """Dataset backed by a JSON/JSONL manifest of cached embeddings.
+
+    Each record must provide at least a labels field (multi-hot array or
+    path to a persisted tensor) and one of embedding or embedding_path.
+    Optional fields include lengths, protein_prior (or
+    protein_prior_path), and go_prior (or go_prior_path).
+    """
+
+    def __init__(self, manifest_path: Path) -> None:
+        self.manifest_path = manifest_path
+        self.records = self._load_manifest(manifest_path)
+        if not self.records:
+            raise ValueError(f"Manifest {manifest_path} did not yield any records.")
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
+        record = self.records[index]
+        seq_embeddings = self._load_embedding(record)
+        labels = self._load_tensor(record, key="labels")
+        sample: Dict[str, torch.Tensor] = {
+            "seq_embeddings": seq_embeddings,
+            "targets": labels.to(dtype=torch.float32),
+        }
+
+        if "lengths" in record:
+            sample["lengths"] = self._load_tensor(record, key="lengths").to(torch.long)
+
+        protein_prior = self._load_optional_tensor(record, base_key="protein_prior")
+        if protein_prior is not None:
+            sample["protein_prior"] = protein_prior
+
+        go_prior = self._load_optional_tensor(record, base_key="go_prior")
+        if go_prior is not None:
+            sample["go_prior"] = go_prior
+
+        return sample
+
+    def _load_manifest(self, path: Path) -> list[Dict[str, Any]]:
+        if not path.exists():
+            raise FileNotFoundError(f"Manifest not found: {path}")
+        suffix = path.suffix.lower()
+        if suffix == ".json":
+            return self._read_json(path)
+        raise ValueError(f"Unsupported manifest format: {path.suffix}")
+
+    def _read_json(self, path: Path) -> list[Dict[str, Any]]:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict) and "records" in data:
+            records = data["records"]
+            if not isinstance(records, list):
+                raise TypeError("records must be a list of manifest entries")
+            return records
+        raise TypeError("JSON manifest must be a list or wrap a 'records' list")
+
+    def _load_embedding(self, record: Mapping[str, Any]) -> torch.Tensor:
+        if "embedding_path" in record:
+            emb_path = Path(record["embedding_path"])
+            tensor = self._load_array_from_path(emb_path, key=record.get("embedding_key"))
+        else:
+            raise KeyError("Manifest record must include embedding info")
+
+        if tensor.ndim != 2:
+            raise ValueError("Embeddings must be 2D (length, feature_dim)")
+        return tensor
+
+    def _load_tensor(self, record: Mapping[str, Any], key: str) -> torch.Tensor:
+        if key in record:
+            value = record[key]
+            if isinstance(value, (list, tuple)):
+                return torch.tensor(value)
+            if isinstance(value, (int, float)):
+                return torch.tensor([value])
+            if isinstance(value, str):
+                return self._load_array_from_path(Path(value))
+            if isinstance(value, np.ndarray):
+                return torch.from_numpy(value)
+            if isinstance(value, torch.Tensor):
+                return value
+            raise TypeError(f"Unsupported value type for {key}: {type(value)}")
+        path_key = f"{key}_path"
+        if path_key in record:
+            return self._load_array_from_path(Path(record[path_key]))
+        raise KeyError(f"Manifest record missing '{key}' or '{path_key}'")
+
+    def _load_optional_tensor(
+        self, record: Mapping[str, Any], base_key: str
+    ) -> Optional[torch.Tensor]:
+        try:
+            return self._load_tensor(record, key=base_key).to(dtype=torch.float32)
+        except KeyError:
+            return None
+
+    def _load_array_from_path(self, path: Path, key: Optional[str] = None) -> torch.Tensor:
+        if not path.is_absolute():
+            path = (self.manifest_path.parent / path).resolve()
+        return load_npz_tensor(path, key)
+
 
 
 def collate_manifest_batch(batch: Sequence[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
@@ -463,11 +427,6 @@ def build_sequence_dataloader(
         num_workers=num_workers,
         pin_memory=pin_memory,
     )
-
-
-# ---------------------------------------------------------------------------
-# IA weight loader shared with training entry point
-# ---------------------------------------------------------------------------
 
 
 def load_ia_weights(cfg: Mapping[str, Any], base_dir: Path) -> Optional[np.ndarray]:

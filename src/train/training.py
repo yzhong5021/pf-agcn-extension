@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
@@ -32,16 +33,14 @@ from cafaeval.evaluation import normalize as cafa_normalize
 from cafaeval.graph import GroundTruth as CafaGroundTruth
 from cafaeval.graph import Prediction as CafaPrediction
 
-from model.model import PFAGCN
-from modules.dataloader import build_manifest_dataloader, load_ia_weights
-from modules.loss import BCEWithLogits
+from src.model.model import PFAGCN
+from src.modules.dataloader import build_manifest_dataloader, load_ia_weights
+from src.modules.loss import BCEWithLogits
 
 log = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Config helpers
-# ---------------------------------------------------------------------------
+###### Config utils ######
 
 
 def flatten_config(config: Mapping[str, Any], parent: str = "") -> Dict[str, Any]:
@@ -170,9 +169,7 @@ def build_scheduler(cfg: DictConfig, optimizer: Optimizer) -> Optional[LambdaLR]
     return LambdaLR(optimizer, lr_lambda=lambdas)
 
 
-# ---------------------------------------------------------------------------
-# CAFA metrics
-# ---------------------------------------------------------------------------
+######### CAFA metrics ###########
 
 
 def compute_cafa_metrics(
@@ -289,10 +286,7 @@ def compute_cafa_metrics(
     return metrics
 
 
-# ---------------------------------------------------------------------------
-# Lightning module
-# ---------------------------------------------------------------------------
-
+####### Lightning Module #######
 
 class PFAGCNLightningModule(LightningModule):
     """Lightning wrapper around PF-AGCN with CAFA evaluation."""
@@ -495,9 +489,11 @@ class MLflowModelSaver(Callback):
 
 def _prepare_mlflow_logger(cfg: DictConfig, base_dir: Path) -> MLFlowLogger:
     tracking_dir = (base_dir / "mlruns").resolve()
+    tracking_dir.mkdir(parents=True, exist_ok=True)
+    tracking_uri = tracking_dir.as_uri()
     logger = MLFlowLogger(
         experiment_name=cfg.get("experiment_name", "pfagcn"),
-        tracking_uri=f"file://{tracking_dir}",
+        tracking_uri=tracking_uri,
         run_name=cfg.get("run_name", "pf-agcn"),
     )
     resolved_cfg = OmegaConf.to_container(cfg, resolve=True)
@@ -513,9 +509,7 @@ def _precision_arg(cfg: DictConfig) -> Any:
     return precision_cfg
 
 
-# ---------------------------------------------------------------------------
-# Hydra main
-# ---------------------------------------------------------------------------
+###### Hydra main ######
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="default_config")
@@ -527,16 +521,16 @@ def main(cfg: DictConfig) -> None:
     seed_everything(int(cfg.training.get("seed", 42)), workers=True)
 
     train_loader = build_manifest_dataloader(
-        cfg.data.get("train_manifest"),
-        cfg.data,
+        cfg.data_config.get("train_manifest"),
+        cfg.data_config,
         base_dir,
         shuffle=True,
     )
     if train_loader is None:
         raise RuntimeError("Training manifest is required to start training.")
     val_loader = build_manifest_dataloader(
-        cfg.data.get("val_manifest"),
-        cfg.data,
+        cfg.data_config.get("val_manifest"),
+        cfg.data_config,
         base_dir,
         shuffle=False,
     )
@@ -593,3 +587,5 @@ def main(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     main()
+
+

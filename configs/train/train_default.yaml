@@ -1,3 +1,4 @@
+﻿# @package _global_
 # train_default.yaml
 # baseline training schedule + logging knobs for PF-AGCN.
 
@@ -29,8 +30,9 @@ scheduler:
   min_lr: 0.000005
 
 data:
-  train_manifest: data/toy/train.json
-  val_manifest: data/toy/val.json
+  train_manifest: null
+  val_manifest: null
+  test_manifest: null
   batch_size: 8
   num_workers: 4
   pin_memory: true
@@ -40,3 +42,4 @@ evaluation:
   metric: fmax
   val_interval: 1
   threshold_grid: [0.1, 0.3, 0.5, 0.7]
+

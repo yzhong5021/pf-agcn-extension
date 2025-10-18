@@ -1,0 +1,70 @@
+﻿# configs/system/local_low.yaml
+# Hydra overrides for constrained local testing (<=12GB RAM, <=8 threads).
+
+seed: 42
+cudnn_deterministic: true
+cudnn_benchmark: false
+
+# --- Compute / precision ---
+device: cpu
+precision: "fp32"
+amp: false
+
+# --- Data loading ---
+num_workers: 2
+prefetch_factor: 1
+pin_memory: false
+persistent_workers: false
+
+# --- Paths ---
+cache_dir: ${hydra:runtime.cwd}/.cache/local_low
+save_dir: ${hydra:runtime.output_dir}
+checkpoint_dir: ${.save_dir}/checkpoints
+checkpoint_interval_epochs: null
+resume: false
+
+# --- Experiment tracking ---
+mlflow:
+  tracking_uri: null
+  experiment_name: pfagcn_local_low
+  artifact_root: null
+
+# --- Distributed setup ---
+distributed:
+  enabled: false
+  backend: null
+  find_unused_parameters: false
+  timeout_seconds: 1800
+
+# --- Preemptible handling ---
+preemptible:
+  enabled: false
+  save_on_sigterm: false
+  sigterm_grace_seconds: 0
+
+# --- Priors/embeddings policy ---
+rebuild_priors: false
+rebuild_embeddings: false
+
+# --- Logging cadence ---
+log_every: 25
+val_every_epochs: 1
+
+# --- Environment thread caps ---
+env:
+  OMP_NUM_THREADS: 8
+  MKL_NUM_THREADS: 8
+  NUMEXPR_NUM_THREADS: 8
+  TORCH_NUM_THREADS: 8
+
+# --- Hydra runtime ---
+hydra:
+  run:
+    dir: ${hydra:runtime.cwd}/results/local_low/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  job:
+    chdir: true
+  sweep:
+    dir: ${hydra:runtime.cwd}/results/local_low/sweeps/${now:%Y-%m-%d}
+    subdir: ${now:%H-%M-%S}
+
+

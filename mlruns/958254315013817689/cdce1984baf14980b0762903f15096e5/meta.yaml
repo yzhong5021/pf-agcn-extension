@@ -1,0 +1,14 @@
+artifact_uri: file:///C:/Users/yoche/OneDrive%20-%20The%20University%20of%20Texas%20at%20Austin/Documents/pf_agcn/mlruns/958254315013817689/cdce1984baf14980b0762903f15096e5/artifacts
+end_time: 1760764020833
+entry_point_name: ''
+experiment_id: '958254315013817689'
+lifecycle_stage: active
+run_id: cdce1984baf14980b0762903f15096e5
+run_name: pf-agcn
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1760764018859
+status: 4
+tags: []
+user_id: yoche

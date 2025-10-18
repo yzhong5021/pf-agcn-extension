@@ -8,7 +8,7 @@ adaptive graphs through bilinear attention module + top-K sparsification for pro
 import torch
 import torch.nn as nn
 
-from utils.adaptive_helpers import (
+from src.utils.adaptive_helpers import (
     _init_attention_layers,
     _init_linear_stack,
     _build_top_p_attention,
