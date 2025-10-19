@@ -6,11 +6,14 @@ seq_embeddings:
   seq_len: 512
   dtype: float32
 prot_prior:
+  enabled: false
+  method: cosine
   cache_path: null
   top_p_mass: 0.9
   temperature: 1.0
   symmetric: true
 go_prior:
+  enabled: true
   cache_path: null
   top_p_mass: 0.9
   temperature: 1.0

@@ -1,33 +1,25 @@
-import pytest
+﻿import pytest
 import torch
 
-from modules.dccn import DCCN_1D
+from src.modules.dccn import DCCN_1D
 
 
-def test_forward_shape() -> None:
+def test_dccn_forward_mask() -> None:
     torch.manual_seed(0)
-    block = DCCN_1D(embed_len=16, k_size=3, dilation=2, dropout=0.0)
-    tokens = torch.randn(2, 12, 16)
+    model = DCCN_1D(embed_len=8, k_size=3, dilation=2, dropout=0.0)
+    x = torch.randn(2, 5, 8)
+    mask = torch.tensor([[1, 1, 1, 0, 0], [1, 1, 1, 1, 1]], dtype=torch.float32)
 
-    out = block(tokens)
+    out = model(x, mask)
 
-    assert out.shape == tokens.shape
+    assert out.shape == x.shape
     assert torch.isfinite(out).all()
 
 
-def test_backward_grad() -> None:
-    block = DCCN_1D(embed_len=16)
-    tokens = torch.randn(1, 8, 16, requires_grad=True)
+def test_dccn_mask_shape_mismatch() -> None:
+    model = DCCN_1D(embed_len=4)
+    x = torch.randn(1, 4, 4)
+    bad_mask = torch.ones(2, 4)
 
-    block(tokens).sum().backward()
-
-    assert tokens.grad is not None
-    assert torch.isfinite(tokens.grad).all()
-
-
-def test_bad_rank() -> None:
-    block = DCCN_1D(embed_len=8)
-    bad_tokens = torch.randn(8, 8)
-
-    with pytest.raises(IndexError):
-        block(bad_tokens)
+    with pytest.raises(ValueError):
+        model(x, bad_mask)

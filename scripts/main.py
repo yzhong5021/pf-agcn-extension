@@ -1,10 +1,11 @@
-﻿"""Convenience CLI to train or run inference for PF-AGCN."""
+"""Convenience CLI to train or run inference for PF-AGCN."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -86,14 +87,46 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _resolve_config_dir(config_path: str | Path) -> Path:
+    """Resolve config directory relative to the project root and validate it exists."""
 
-def _compose_config(config_dir: Path, config_name: str, overrides: list[str] | None = None) -> DictConfig:
-    GlobalHydra.instance().clear()
+    config_path_str = str(config_path).strip()
+    if not config_path_str:
+        raise ValueError("config_path must be a non-empty string")
+    normalised_path = config_path_str.replace(chr(92), "/")
+    config_dir = Path(normalised_path).expanduser()
     if not config_dir.is_absolute():
         config_dir = (PROJECT_ROOT / config_dir).resolve()
     else:
         config_dir = config_dir.resolve()
-    with initialize_config_dir(config_dir=str(config_dir), job_name="pf_agcn_scripts", version_base=None):
+    if not config_dir.exists():
+        raise FileNotFoundError(
+            f"Config directory not found at {config_dir}. "
+            "Set --config-path relative to the project root or provide an absolute path."
+        )
+    return config_dir
+
+
+def _config_path_for_hydra(config_path: str | Path) -> str:
+    """Hydra expects config_path relative to this script; convert and normalise separators."""
+
+    config_dir = _resolve_config_dir(config_path)
+    script_dir = Path(__file__).resolve().parent
+    try:
+        relative = os.path.relpath(config_dir, script_dir)
+    except ValueError:
+        relative = config_dir.as_posix()
+    return relative.replace(chr(92), "/")
+
+
+def _compose_config(
+    config_dir: str | Path, config_name: str, overrides: list[str] | None = None
+) -> DictConfig:
+    GlobalHydra.instance().clear()
+    resolved_dir = _resolve_config_dir(config_dir)
+    with initialize_config_dir(
+        config_dir=str(resolved_dir), job_name="pf_agcn_scripts", version_base=None
+    ):
         cfg = compose(config_name=config_name, overrides=overrides or [], return_hydra_config=True)
     return cfg
 
@@ -112,6 +145,7 @@ def _ensure_manifests(cfg: DictConfig, aspect: str) -> List[str]:
 
     data_cfg = OmegaConf.to_container(cfg.data_config, resolve=True)
     seq_cfg = OmegaConf.to_container(cfg.model.seq_embeddings, resolve=True)
+    prot_prior_cfg = OmegaConf.to_container(cfg.model.prot_prior, resolve=True)
     feature_dim = int(seq_cfg["feature_dim"])
     max_len_val = seq_cfg.get("seq_len")
     max_length = int(max_len_val) if max_len_val else None
@@ -129,6 +163,9 @@ def _ensure_manifests(cfg: DictConfig, aspect: str) -> List[str]:
         if num_functions is None:
             raise ValueError(f"Manifest at {manifest_path} is missing 'num_functions' metadata")
         overrides.append(f"task.num_functions={int(num_functions)}")
+        feature_dim_meta = meta.get("feature_dim")
+        if feature_dim_meta is not None:
+            overrides.append(f"model.seq_embeddings.feature_dim={int(feature_dim_meta)}")
         if not data_cfg.get("val_manifest"):
             overrides.append(f"data_config.val_manifest={manifest_path.as_posix()}")
         if not data_cfg.get("test_manifest"):
@@ -142,6 +179,7 @@ def _ensure_manifests(cfg: DictConfig, aspect: str) -> List[str]:
         aspect=aspect_upper,
         feature_dim=feature_dim,
         max_length=max_length,
+        protein_prior_cfg=prot_prior_cfg,
     )
     overrides.extend(
         [
@@ -149,6 +187,7 @@ def _ensure_manifests(cfg: DictConfig, aspect: str) -> List[str]:
             f"data_config.val_manifest={bundle.val.as_posix()}",
             f"data_config.test_manifest={bundle.test.as_posix()}",
             f"task.num_functions={bundle.num_functions}",
+            f"model.seq_embeddings.feature_dim={bundle.feature_dim}",
         ]
     )
     return overrides
@@ -156,8 +195,9 @@ def _ensure_manifests(cfg: DictConfig, aspect: str) -> List[str]:
 
 def run_train(config_path: str, config_name: str, aspect: str) -> None:
     aspect_upper = aspect.upper()
+    hydra_config_path = _config_path_for_hydra(config_path)
 
-    @hydra.main(version_base=None, config_path=config_path, config_name=config_name)
+    @hydra.main(version_base=None, config_path=hydra_config_path, config_name=config_name)
     def _train(cfg: DictConfig) -> None:
         manifest_overrides = _ensure_manifests(cfg, aspect_upper)
         if manifest_overrides:
@@ -180,6 +220,7 @@ def _resolve_manifest_for_predict(args: argparse.Namespace) -> str:
     cfg = _compose_config(config_path.parent, config_path.stem, cli_overrides)
     data_cfg = OmegaConf.to_container(cfg.data_config, resolve=True)
     seq_cfg = OmegaConf.to_container(cfg.model.seq_embeddings, resolve=True)
+    prot_prior_cfg = OmegaConf.to_container(cfg.model.prot_prior, resolve=True)
     feature_dim = int(seq_cfg["feature_dim"])
     max_len_val = seq_cfg.get("seq_len")
     max_length = int(max_len_val) if max_len_val else None
@@ -224,6 +265,7 @@ def _resolve_manifest_for_predict(args: argparse.Namespace) -> str:
         aspect=aspect,
         feature_dim=feature_dim,
         max_length=max_length,
+        protein_prior_cfg=prot_prior_cfg,
     )
     log.info("Generated inference manifest at %s", bundle.test)
     return bundle.test.as_posix()

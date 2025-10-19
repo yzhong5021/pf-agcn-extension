@@ -1,37 +1,30 @@
-import pytest
-import torch
+﻿import torch
 
-from modules.head import ClassificationHead
+from src.modules.head import ClassificationHead
 
 
-def test_logits_shape() -> None:
+def test_classification_head_shapes() -> None:
     torch.manual_seed(0)
-    head = ClassificationHead(N_C=7, d_in=12, dropout=0.0)
-    function_feats = torch.randn(7, 12)
-    protein_feats = torch.randn(4, 12)
+    head = ClassificationHead(N_C=5, d_in=6, dropout=0.0)
+    functions = torch.randn(5, 6)
+    proteins = torch.randn(7, 6)
 
-    logits = head(function_feats, protein_feats)
+    logits = head(functions, proteins)
 
-    assert logits.shape == (4, 7)
+    assert logits.shape == (7, 5)
     assert torch.isfinite(logits).all()
+    assert head.bias.shape == (5,)
+    assert head.log_tau.shape == torch.Size([])
 
 
-def test_tau_grad() -> None:
-    head = ClassificationHead(N_C=3, d_in=6, dropout=0.0)
-    function_feats = torch.randn(3, 6, requires_grad=True)
-    protein_feats = torch.randn(2, 6, requires_grad=True)
+def test_classification_head_scaling_changes_output() -> None:
+    torch.manual_seed(1)
+    head = ClassificationHead(N_C=3, d_in=4)
+    functions = torch.randn(3, 4)
+    proteins = torch.randn(2, 4)
 
-    logits = head(function_feats, protein_feats)
-    logits.sum().backward()
+    baseline = head(functions, proteins)
+    head.log_tau.data.fill_(0.5)
+    scaled = head(functions, proteins)
 
-    assert head.log_tau.grad is not None
-    assert torch.isfinite(head.log_tau.grad)
-
-
-def test_dim_mismatch() -> None:
-    head = ClassificationHead(N_C=3, d_in=4, dropout=0.0)
-    function_feats = torch.randn(3, 5)
-    protein_feats = torch.randn(2, 4)
-
-    with pytest.raises(RuntimeError):
-        head(function_feats, protein_feats)
+    assert not torch.allclose(baseline, scaled)

@@ -1,7 +1,8 @@
-﻿"""Utilities to build aspect-specific manifests for PF-AGCN."""
+"""Utilities to build aspect-specific manifests for PF-AGCN."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -25,13 +26,16 @@ from modules.dataloader import (
     parse_fasta_sequences,
     parse_ground_truth_table,
 )
+from utils.esm_embed import ESM_Embed
 from utils.go_prior import Go_Prior
+from utils.prot_prior import prot_prior_blast
 
 log = logging.getLogger(__name__)
 
-AA_ALPHABET = "ACDEFGHIKLMNPQRSTVWY"
-AA_TO_INDEX = {aa: idx for idx, aa in enumerate(AA_ALPHABET)}
 ASPECT_CHOICES = {"MF", "BP", "CC"}
+ESM_CACHE_ROOT = (PROJECT_ROOT / "data" / "esm_cache").resolve()
+ESM_MODEL_CACHE_DIR = (ESM_CACHE_ROOT / "models").resolve()
+_ESM_EMBEDDER: Optional[ESM_Embed] = None
 
 
 @dataclass
@@ -45,15 +49,7 @@ class ManifestBundle:
     num_functions: int
     go_prior_path: Path
     terms: Sequence[str]
-
-
-def _safe_filename(stem: str, registry: Dict[str, int]) -> str:
-    cleaned = "".join(c if c.isalnum() or c in {"-", "_"} else "_" for c in stem)
-    if not cleaned:
-        cleaned = "protein"
-    counter = registry.setdefault(cleaned, 0)
-    registry[cleaned] = counter + 1
-    return f"{cleaned}_{counter}" if counter else cleaned
+    feature_dim: int
 
 
 def _coerce_path(value: Optional[str]) -> Optional[Path]:
@@ -65,19 +61,44 @@ def _coerce_path(value: Optional[str]) -> Optional[Path]:
     return path
 
 
+def _embedding_cache_path(entry_id: str) -> Path:
+    safe_id = "".join(c if c.isalnum() or c in {"-", "_"} else "_" for c in entry_id)
+    digest = hashlib.md5(entry_id.encode("utf-8")).hexdigest()[:8]
+    filename = f"{safe_id or 'protein'}_{digest}.npy"
+    return ESM_CACHE_ROOT / filename
 
-def _sequence_to_embedding(sequence: str, feature_dim: int, max_length: Optional[int]) -> np.ndarray:
-    tokens = sequence.strip().upper()
-    if max_length is not None:
-        tokens = tokens[:max_length]
-    length = len(tokens)
-    embedding = np.zeros((length, feature_dim), dtype=np.float32)
-    for idx, aa in enumerate(tokens):
-        aa_index = AA_TO_INDEX.get(aa)
-        if aa_index is None or aa_index >= feature_dim:
-            continue
-        embedding[idx, aa_index] = 1.0
-    return embedding
+
+def _get_esm_embedder(max_length: Optional[int]) -> ESM_Embed:
+    global _ESM_EMBEDDER
+    if _ESM_EMBEDDER is None:
+        kwargs: Dict[str, Any] = {}
+        if max_length is not None:
+            kwargs["max_len"] = int(max_length)
+        kwargs["cache_dir"] = ESM_MODEL_CACHE_DIR
+        _ESM_EMBEDDER = ESM_Embed(**kwargs)
+    return _ESM_EMBEDDER
+
+
+def _ensure_cached_embedding(
+    entry_id: str,
+    sequence: str,
+    *,
+    max_length: Optional[int],
+) -> tuple[Path, int, int]:
+    cache_path = _embedding_cache_path(entry_id)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if cache_path.exists():
+        array = np.load(cache_path, mmap_mode="r")
+        length, dim = array.shape
+        return cache_path, int(length), int(dim)
+
+    embedder = _get_esm_embedder(max_length)
+    embeddings, mask = embedder.get_esm_embed([sequence])
+    residue_embeddings = embeddings[0][mask[0]].detach().cpu().numpy().astype(np.float32)
+    np.save(cache_path, residue_embeddings)
+    length, dim = residue_embeddings.shape
+    return cache_path, int(length), int(dim)
 
 
 def _load_split_ids(split_path: Optional[str]) -> Optional[Sequence[str]]:
@@ -124,6 +145,7 @@ def prepare_manifests(
     aspect: str,
     feature_dim: int,
     max_length: Optional[int] = None,
+    protein_prior_cfg: Optional[Mapping[str, Any]] = None,
 ) -> ManifestBundle:
     aspect = aspect.upper()
     if aspect not in ASPECT_CHOICES:
@@ -135,6 +157,15 @@ def prepare_manifests(
 
     raw_dir = output_root / "raw" / aspect.lower()
     raw_dir.mkdir(parents=True, exist_ok=True)
+
+    prior_cfg = dict(protein_prior_cfg or {})
+    prior_enabled = bool(prior_cfg.get("enabled", False))
+    prior_method = str(prior_cfg.get("method", "cosine")).lower()
+    use_blast_prior = prior_enabled and prior_method == "blast"
+    blast_kwargs = {
+        "evalue_threshold": float(prior_cfg.get("evalue_threshold", 1e-5)),
+        "blastp_bin": str(prior_cfg.get("blastp_bin", "blastp")),
+    }
 
     seqs_train_path = _coerce_path(sources.get("seqs_train_path"))
     terms_train_path = _coerce_path(sources.get("terms_train_path"))
@@ -163,9 +194,11 @@ def prepare_manifests(
                 raise FileNotFoundError(f"Term file not found: {extra_path}")
             term_tables.append(parse_ground_truth_table(extra_path))
 
-    sequences = (pd.concat(seq_tables, ignore_index=True)
-                   .drop_duplicates(subset="entry_id", keep="first")
-                   .reset_index(drop=True))
+    sequences = (
+        pd.concat(seq_tables, ignore_index=True)
+        .drop_duplicates(subset="entry_id", keep="first")
+        .reset_index(drop=True)
+    )
 
     term_table = pd.concat(term_tables, ignore_index=True)
     aggregated = term_table.groupby("entry_id")["term"].agg(list).reset_index()
@@ -183,7 +216,11 @@ def prepare_manifests(
     candidate_path = _coerce_path(split_source) if split_source else None
     if candidate_path is None or not candidate_path.exists():
         if candidate_path is not None and not candidate_path.exists():
-            log.warning("train_split_csv %s missing; using cached aggregate %s", candidate_path, split_cache)
+            log.warning(
+                "train_split_csv %s missing; using cached aggregate %s",
+                candidate_path,
+                split_cache,
+            )
         candidate_path = split_cache
 
     go_priors = Go_Prior(
@@ -200,29 +237,49 @@ def prepare_manifests(
     priors_dir = output_root / "priors" / aspect.lower()
     priors_dir.mkdir(parents=True, exist_ok=True)
     prior_path = priors_dir / f"{aspect.lower()}_prior.npz"
-    np.savez_compressed(prior_path, adjacency=aspect_prior.adjacency, terms=np.array(selected_terms))
+    np.savez_compressed(
+        prior_path,
+        adjacency=aspect_prior.adjacency,
+        terms=np.array(selected_terms),
+    )
 
-    embeddings_dir = output_root / "embeddings" / aspect.lower()
-    embeddings_dir.mkdir(parents=True, exist_ok=True)
-
-    registry: Dict[str, int] = {}
     record_templates: Dict[str, Dict[str, Any]] = {}
+    sequence_lookup: Dict[str, str] = {}
+    embedding_width: Optional[int] = None
     for row in sequences.itertuples():
         entry_id = row.entry_id
-        embedding = _sequence_to_embedding(row.sequence, feature_dim, max_length)
-        safe_name = _safe_filename(entry_id, registry)
-        embed_path = embeddings_dir / f"{safe_name}.npy"
-        np.save(embed_path, embedding)
+        sequence_lookup[entry_id] = row.sequence
+        cache_path, _, dim = _ensure_cached_embedding(
+            entry_id=entry_id,
+            sequence=row.sequence,
+            max_length=max_length,
+        )
+        if embedding_width is None:
+            embedding_width = dim
+        elif embedding_width != dim:
+            raise ValueError(
+                "Inconsistent ESM embedding dimensionality encountered; check cache integrity."
+            )
         targets = _project_targets(entry_id, label_map, term_to_index, selected_terms)
         record_templates[entry_id] = {
             "entry_id": entry_id,
-            "embedding_rel": Path("embeddings") / aspect.lower() / f"{safe_name}.npy",
+            "embedding_path": cache_path,
             "targets": targets,
             "labels": targets,
         }
 
     if not record_templates:
         raise RuntimeError("No records were generated while building manifests")
+
+    if embedding_width is None:
+        raise RuntimeError("Failed to determine embedding dimensionality")
+
+    if feature_dim != embedding_width:
+        log.warning(
+            "seq_embeddings.feature_dim=%s mismatches ESM embedding dimension %s; hydra overrides will update it.",
+            feature_dim,
+            embedding_width,
+        )
 
     split_ids = {
         "train": _load_split_ids(data_cfg.get("train_csv")),
@@ -231,7 +288,7 @@ def prepare_manifests(
     }
 
     meta_template = {
-        "feature_dim": feature_dim,
+        "feature_dim": embedding_width,
         "max_length": max_length,
         "num_functions": num_functions,
         "terms": selected_terms,
@@ -244,35 +301,79 @@ def prepare_manifests(
         split_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = split_dir / f"{aspect.lower()}_manifest.json"
         selected_ids = ids or list(record_templates.keys())
-        records = []
+        rel_go_prior = os.path.relpath(prior_path, split_dir).replace(os.sep, "/")
+        records: list[Dict[str, Any]] = []
+        manifest_ids: list[str] = []
         for entry_id in selected_ids:
             template = record_templates.get(str(entry_id))
             if template is None:
                 continue
-            rel_embed = os.path.relpath(output_root / template["embedding_rel"], split_dir)
-            rel_prior = os.path.relpath(prior_path, split_dir)
+            manifest_ids.append(template["entry_id"])
+            rel_embed = os.path.relpath(template["embedding_path"], split_dir)
             records.append(
                 {
                     "entry_id": template["entry_id"],
                     "embedding_path": rel_embed.replace(os.sep, "/"),
                     "targets": template["targets"],
                     "labels": template.get("labels", template["targets"]),
-                    "go_prior_path": rel_prior.replace(os.sep, "/"),
+                    "go_prior_path": rel_go_prior,
                 }
             )
         if not records:
-            records = [
-                {
-                    "entry_id": template["entry_id"],
-                    "embedding_path": os.path.relpath(output_root / template["embedding_rel"], split_dir).replace(os.sep, "/"),
-                    "targets": template["targets"],
-                    "labels": template.get("labels", template["targets"]),
-                    "go_prior_path": os.path.relpath(prior_path, split_dir).replace(os.sep, "/"),
-                }
-                for template in record_templates.values()
-            ]
+            records = []
+            manifest_ids = []
+            for template in record_templates.values():
+                manifest_ids.append(template["entry_id"])
+                rel_embed = os.path.relpath(template["embedding_path"], split_dir)
+                records.append(
+                    {
+                        "entry_id": template["entry_id"],
+                        "embedding_path": rel_embed.replace(os.sep, "/"),
+                        "targets": template["targets"],
+                        "labels": template.get("labels", template["targets"]),
+                        "go_prior_path": rel_go_prior,
+                    }
+                )
+
+        protein_prior_path: Optional[Path] = None
+        if use_blast_prior and manifest_ids:
+            sequences_for_prior: list[str] = []
+            for entry_id in manifest_ids:
+                seq = sequence_lookup.get(entry_id)
+                if seq is None:
+                    raise KeyError(
+                        f"Sequence missing for entry_id '{entry_id}' required for BLAST prior"
+                    )
+                sequences_for_prior.append(seq)
+            prior_tensor = prot_prior_blast(sequences_for_prior, **blast_kwargs)
+            protein_prior_dir = (priors_dir / "protein").resolve()
+            protein_prior_dir.mkdir(parents=True, exist_ok=True)
+            split_prior_path = protein_prior_dir / f"{aspect.lower()}_{split}_blast_prior.npz"
+            np.savez_compressed(
+                split_prior_path,
+                adjacency=prior_tensor.numpy(),
+            )
+            protein_prior_path = split_prior_path
+            rel_protein_prior = os.path.relpath(split_prior_path, split_dir).replace(
+                os.sep,
+                "/",
+            )
+            for idx, record in enumerate(records):
+                record["protein_prior_path"] = rel_protein_prior
+                record["protein_prior_index"] = idx
+
+        manifest_meta = {
+            **meta_template,
+            "go_prior_path": rel_go_prior,
+        }
+        if protein_prior_path is not None:
+            manifest_meta["protein_prior_path"] = os.path.relpath(
+                protein_prior_path, split_dir
+            ).replace(os.sep, "/")
+            manifest_meta["protein_prior_method"] = "blast"
+
         payload = {
-            "meta": {**meta_template, "go_prior_path": os.path.relpath(prior_path, split_dir).replace(os.sep, "/")},
+            "meta": manifest_meta,
             "records": records,
         }
         manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -286,5 +387,5 @@ def prepare_manifests(
         num_functions=num_functions,
         go_prior_path=prior_path,
         terms=selected_terms,
+        feature_dim=embedding_width,
     )
-

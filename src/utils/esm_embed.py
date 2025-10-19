@@ -1,37 +1,64 @@
-"""
-esm_embed.py
+"""Utilities for loading pretrained ESM embeddings for PF-AGCN."""
 
-calls pretrained ESM-1b model to generate embeddings.
-"""
+from __future__ import annotations
 
-from transformers import EsmTokenizer, EsmModel
+from pathlib import Path
+from typing import Optional, Sequence, Tuple
+
+import torch
+import torch.nn as nn
+from transformers import EsmModel, EsmTokenizer
+
 
 class ESM_Embed(nn.Module):
-    def __init__(self, model_name="facebook/esm1b_t33_650M_UR50S", max_len=1000):
-        super().__init__()
-        self.tokenizer = EsmTokenizer.from_pretrained(model_name)
-        self.model = EsmModel.from_pretrained(model_name)
-        self.model.eval()
-        for p in self.model.parameters():
-            p.requires_grad = False
+    """Thin wrapper around HuggingFace ESM models with frozen weights."""
 
-        self.max_len = max_len
-        self.cls_id  = self.tokenizer.cls_token_id
-        self.eos_id  = self.tokenizer.eos_token_id
-        self.pad_id  = self.tokenizer.pad_token_id
+    def __init__(
+        self,
+        model_name: str = "facebook/esm1b_t33_650M_UR50S",
+        max_len: int = 1022,
+        truncate_len: int = 1000,
+        device: str | torch.device = "cpu",
+        cache_dir: Optional[str | Path] = None,
+    ) -> None:
+        super().__init__()
+        self.device = torch.device(device)
+        self.cache_dir = Path(cache_dir) if cache_dir is not None else None
+        if self.cache_dir is not None:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+        pretrained_kwargs = {}
+        if self.cache_dir is not None:
+            pretrained_kwargs["cache_dir"] = str(self.cache_dir)
+        self.tokenizer = EsmTokenizer.from_pretrained(model_name, **pretrained_kwargs)
+        self.model = EsmModel.from_pretrained(model_name, **pretrained_kwargs)
+        self.model.eval()
+        self.model.to(self.device)
+        for parameter in self.model.parameters():
+            parameter.requires_grad = False
+
+        self.max_len = int(max_len)
+        self.truncate_len = int(truncate_len)
+        self.cls_id = self.tokenizer.cls_token_id
+        self.eos_id = self.tokenizer.eos_token_id
+        self.pad_id = self.tokenizer.pad_token_id
 
     @torch.inference_mode()
-    def get_esm_embed(self, seqs):
-        seqs = [s if len(s) <= self.max_len else s[:self.max_len] for s in seqs]
+    def get_esm_embed(self, seqs: Sequence[str]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return residue-level embeddings and masks for provided sequences."""
+        sequences = [seq if len(seq) <= self.max_len else seq[:self.truncate_len] for seq in seqs]
 
-        enc = self.tokenizer(
-            seqs, return_tensors="pt",
-            padding=True, truncation=True, add_special_tokens=True,
-            return_attention_mask=True
+        batch = self.tokenizer(
+            sequences,
+            return_tensors="pt",
+            padding=True,
+            truncation=False, # truncation is done prior
+            add_special_tokens=True,
+            return_attention_mask=True,
         )
-        
-        out = self.model(**enc)
+        batch = {key: value.to(self.device) for key, value in batch.items()}
 
-        input_ids = enc["input_ids"]
+        outputs = self.model(**batch)
+        input_ids = batch["input_ids"]
         residue_mask = (input_ids != self.pad_id) & (input_ids != self.cls_id) & (input_ids != self.eos_id)
-        return out.last_hidden_state, residue_mask
+        return outputs.last_hidden_state, residue_mask
