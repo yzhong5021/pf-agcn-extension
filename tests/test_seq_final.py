@@ -1,27 +1,25 @@
-import torch
+﻿import torch
 
-from modules.seq_final import SeqFinal
+from src.modules.seq_final import SeqFinal
 
 
-def test_go_shape() -> None:
+def test_seq_final_prot_proj_shape() -> None:
     torch.manual_seed(0)
-    final = SeqFinal(in_dim=32, N_C=4, proj=8, out_ch=6)
-    pooled = torch.randn(5, 32)
+    module = SeqFinal(in_dim=6, N_C=3, proj=4, out_ch=5)
+    proteins = torch.randn(4, 6)
 
-    go = final.go_proj(pooled)
+    out = module.prot_proj(proteins)
 
-    assert go.shape == (4, 5, 6)
-    assert torch.isfinite(go).all()
+    assert out.shape == (4, 4, 5)
+    assert torch.isfinite(out).all()
 
 
-def test_prot_shape(capfd) -> None:
-    torch.manual_seed(4)
-    final = SeqFinal(in_dim=16, N_C=3, proj=4, out_ch=5)
-    pooled = torch.randn(6, 16)
+def test_seq_final_go_proj_shape() -> None:
+    torch.manual_seed(1)
+    module = SeqFinal(in_dim=5, N_C=2, proj=3, out_ch=4)
+    proteins = torch.randn(3, 5)
 
-    prot = final.prot_proj(pooled)
+    out = module.go_proj(proteins)
 
-    capfd.readouterr()
-
-    assert prot.shape == (6, 6, 5)
-    assert torch.isfinite(prot).all()
+    assert out.shape == (2, 3, 4)
+    assert torch.isfinite(out).all()

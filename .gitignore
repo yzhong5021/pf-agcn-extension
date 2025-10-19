@@ -10,3 +10,4 @@ pf_agcn.txt
 .pytest_cache
 mlruns
 outputs
+codex

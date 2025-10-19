@@ -519,12 +519,16 @@ def main(cfg: DictConfig) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     base_dir = Path(get_original_cwd())
     seed_everything(int(cfg.training.get("seed", 42)), workers=True)
+    prot_prior_cfg = OmegaConf.to_container(
+        getattr(cfg.model, "prot_prior", {}), resolve=True
+    )
 
     train_loader = build_manifest_dataloader(
         cfg.data_config.get("train_manifest"),
         cfg.data_config,
         base_dir,
         shuffle=True,
+        protein_prior_cfg=prot_prior_cfg,
     )
     if train_loader is None:
         raise RuntimeError("Training manifest is required to start training.")
@@ -533,6 +537,7 @@ def main(cfg: DictConfig) -> None:
         cfg.data_config,
         base_dir,
         shuffle=False,
+        protein_prior_cfg=prot_prior_cfg,
     )
 
     thresholds = list(cfg.evaluation.get("threshold_grid", [0.5]))

@@ -20,6 +20,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
 log = None
+_PROTEIN_PRIOR_CACHE: Dict[Path, torch.Tensor] = {}
 
 
 def _ensure_logger() -> Any:
@@ -246,13 +247,36 @@ def load_npz_tensor(path: Path, key: str | None = None) -> torch.Tensor:
     raise ValueError(f"Unsupported tensor file extension: {suffix}")
 
 
+def _load_cached_protein_prior(path: Path) -> torch.Tensor:
+    """Load and cache a protein prior adjacency matrix."""
+
+    resolved = path.resolve()
+    cached = _PROTEIN_PRIOR_CACHE.get(resolved)
+    if cached is not None:
+        return cached
+
+    archive = np.load(resolved, allow_pickle=False)
+    if isinstance(archive, np.lib.npyio.NpzFile):
+        if "adjacency" not in archive.files:
+            raise KeyError(
+                f"adjacency missing from {resolved.name}; keys={list(archive.files)}"
+            )
+        array = archive["adjacency"]
+        archive.close()
+    else:
+        array = archive
+    tensor = torch.as_tensor(array, dtype=torch.float32)
+    _PROTEIN_PRIOR_CACHE[resolved] = tensor
+    return tensor
+
+
 class ManifestDataset(Dataset):
     """Dataset backed by a JSON/JSONL manifest of cached embeddings.
 
     Each record must provide at least a labels field (multi-hot array or
     path to a persisted tensor) and one of embedding or embedding_path.
     Optional fields include lengths, protein_prior (or
-    protein_prior_path), and go_prior (or go_prior_path).
+    protein_prior_path/protein_prior_index), and go_prior (or go_prior_path).
     """
 
     def __init__(self, manifest_path: Path) -> None:
@@ -279,6 +303,15 @@ class ManifestDataset(Dataset):
         protein_prior = self._load_optional_tensor(record, base_key="protein_prior")
         if protein_prior is not None:
             sample["protein_prior"] = protein_prior
+
+        prior_path = record.get("protein_prior_path")
+        prior_index = record.get("protein_prior_index")
+        if prior_path is not None and prior_index is not None:
+            resolved = Path(prior_path)
+            if not resolved.is_absolute():
+                resolved = (self.manifest_path.parent / resolved).resolve()
+            sample["protein_prior_path"] = resolved
+            sample["protein_prior_index"] = int(prior_index)
 
         go_prior = self._load_optional_tensor(record, base_key="go_prior")
         if go_prior is not None:
@@ -350,7 +383,10 @@ class ManifestDataset(Dataset):
 
 
 
-def collate_manifest_batch(batch: Sequence[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+def collate_manifest_batch(
+    batch: Sequence[Dict[str, torch.Tensor]],
+    protein_prior_cfg: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, torch.Tensor]:
     """Pad variable-length sequences and stack optional priors."""
 
     seqs = [item["seq_embeddings"] for item in batch]
@@ -370,6 +406,27 @@ def collate_manifest_batch(batch: Sequence[Dict[str, torch.Tensor]]) -> Dict[str
         priors = [item.get("protein_prior") for item in batch]
         if all(p is not None for p in priors):
             collated["protein_prior"] = torch.stack([p for p in priors if p is not None])
+    else:
+        indexed_priors = [
+            (item.get("protein_prior_path"), item.get("protein_prior_index"))
+            for item in batch
+        ]
+        if all(path is not None and index is not None for path, index in indexed_priors):
+            resolved_paths = []
+            indices = []
+            for path_value, index_value in indexed_priors:
+                resolved = Path(path_value) if not isinstance(path_value, Path) else path_value
+                resolved_paths.append(resolved.resolve())
+                indices.append(int(index_value))
+            unique_paths = set(resolved_paths)
+            if len(unique_paths) != 1:
+                raise ValueError(
+                    "Mixed protein prior sources within a batch are not supported."
+                )
+            prior_matrix = _load_cached_protein_prior(unique_paths.pop())
+            selector = torch.tensor(indices, dtype=torch.long)
+            submatrix = prior_matrix.index_select(0, selector).index_select(1, selector)
+            collated["protein_prior"] = submatrix
 
     if any("go_prior" in item for item in batch):
         go_priors = [item.get("go_prior") for item in batch]
@@ -384,6 +441,7 @@ def build_manifest_dataloader(
     data_cfg: Mapping[str, Any],
     base_dir: Path,
     shuffle: bool,
+    protein_prior_cfg: Optional[Mapping[str, Any]] = None,
 ) -> Optional[DataLoader]:
     """Create a manifest-backed dataloader if a path is provided."""
 
@@ -393,6 +451,10 @@ def build_manifest_dataloader(
     if not manifest_path.is_absolute():
         manifest_path = (base_dir / manifest_path).resolve()
     dataset = ManifestDataset(manifest_path)
+
+    def _collate(batch: Sequence[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+        return collate_manifest_batch(batch, protein_prior_cfg=protein_prior_cfg)
+
     return DataLoader(
         dataset,
         batch_size=int(data_cfg["batch_size"]),
@@ -400,7 +462,7 @@ def build_manifest_dataloader(
         num_workers=int(data_cfg.get("num_workers", 0)),
         pin_memory=bool(data_cfg.get("pin_memory", False)),
         drop_last=bool(data_cfg.get("drop_last", False)),
-        collate_fn=collate_manifest_batch,
+        collate_fn=_collate,
     )
 
 

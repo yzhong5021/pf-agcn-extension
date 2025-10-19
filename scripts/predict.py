@@ -80,6 +80,8 @@ def main(argv: list[str] | None = None) -> None:
     config_path = Path(args.config)
     cfg = load_config(config_path)
     data_cfg = cfg.get("data_config", {})
+    model_cfg = cfg.get("model", {})
+    protein_prior_cfg = model_cfg.get("prot_prior")
     if args.batch_size is not None:
         data_cfg = dict(data_cfg)
         data_cfg["batch_size"] = args.batch_size
@@ -89,6 +91,7 @@ def main(argv: list[str] | None = None) -> None:
         data_cfg=data_cfg,
         base_dir=config_path.parent.resolve(),
         shuffle=False,
+        protein_prior_cfg=protein_prior_cfg,
     )
     if dataloader is None:
         raise RuntimeError("Inference manifest is required.")

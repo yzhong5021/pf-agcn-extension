@@ -1,28 +1,27 @@
-import torch
+﻿import torch
+import torch.nn.functional as F
 
-from modules.loss import BCEWithLogits
+from src.modules.loss import BCEWithLogits
 
 
-def test_matches_torch() -> None:
+def test_bce_with_logits_matches_functional() -> None:
     torch.manual_seed(0)
-    criterion = BCEWithLogits(pos_weight=None)
-    logits = torch.tensor([[0.5, -1.0], [1.0, 0.0]], dtype=torch.float32)
-    targets = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+    logits = torch.randn(3, 4)
+    targets = torch.randint(0, 2, (3, 4), dtype=torch.float32)
 
-    loss = criterion(logits, targets)
+    loss_module = BCEWithLogits(pos_weight=None)
 
-    manual = torch.nn.functional.binary_cross_entropy_with_logits(
-        logits, targets, reduction="mean"
-    )
-
-    assert torch.isclose(loss, manual)
+    assert torch.isclose(loss_module(logits, targets), F.binary_cross_entropy_with_logits(logits, targets))
 
 
-def test_pos_weight() -> None:
-    logits = torch.zeros(1, 1)
-    targets = torch.ones(1, 1)
+def test_bce_with_logits_pos_weight() -> None:
+    logits = torch.tensor([[0.0, 1.0]])
+    targets = torch.tensor([[0.0, 1.0]])
+    pos_weight = torch.tensor([1.0, 2.0])
 
-    balanced = BCEWithLogits(pos_weight=None)(logits, targets)
-    weighted = BCEWithLogits(pos_weight=torch.tensor([2.0]))(logits, targets)
+    loss_module = BCEWithLogits(pos_weight=pos_weight)
+    loss = loss_module(logits, targets)
 
-    assert weighted > balanced
+    expected = F.binary_cross_entropy_with_logits(logits, targets, pos_weight=pos_weight, reduction="none").mean()
+
+    assert torch.isclose(loss, expected)

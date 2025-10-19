@@ -7,11 +7,16 @@ seq_embeddings:
   seq_len: 512
   dtype: float32
 prot_prior:
+  enabled: true
+  method: blast # or cosine for esm embeddings
+  blastp_bin: blastp
+  evalue_threshold: 1.0e-05
   cache_path: null
   top_p_mass: 0.9
   temperature: 1.0
   symmetric: true
 go_prior:
+  enabled: true
   cache_path: null
   top_p_mass: 0.9
   temperature: 1.0
@@ -23,29 +28,29 @@ dccn:
   dropout: 0.1
 seq_gating:
   shared_dim: 128
-  esm_dim: 128
-  dccn_channels: 64
+  esm_dim:  ${..seq_embeddings.feature_dim}
+  dccn_channels: ${..dccn.channels}
   attn_hidden: 128
   dropout: 0.1
 seq_final:
   metric_dim: 64
-  graph_dim: 128
+  graph_dim: ${..seq_gating.shared_dim}
 adaptive_protein:
-  feature_dim: 128
+  feature_dim: ${..seq_gating.shared_dim}
   attention_dim: 128
   steps: 2
   top_p_mass: 0.9
   temperature: 1.0
   dropout: 0.1
 adaptive_function:
-  feature_dim: 128
+  feature_dim: ${..seq_gating.shared_dim}
   attention_dim: 128
   steps: 1
   top_p_mass: 0.9
   temperature: 1.0
   dropout: 0.1
 head:
-  feature_dim: 128
+  feature_dim: ${..seq_gating.shared_dim}
   dropout: 0.1
 loss:
   name: bce_with_logits

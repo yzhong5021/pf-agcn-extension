@@ -11,3 +11,4 @@ omegaconf>=2.3.0
 mlflow>=2.0.0
 biopython>=1.83
 cafaeval>=1.2.1
+transformers>=4.57.1

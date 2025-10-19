@@ -9,8 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
+import logging
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 try:
     from model.config import PFAGCNConfig  # type: ignore
@@ -52,6 +55,9 @@ class PFAGCN(nn.Module):
         dccn_channels = model_cfg.dccn.channels
         graph_dim = model_cfg.seq_final.graph_dim
         shared_dim = model_cfg.seq_gating.shared_dim
+        self.use_protein_prior = bool(getattr(model_cfg.prot_prior, "enabled", False))
+        self.protein_prior_method = getattr(model_cfg.prot_prior, "method", "cosine")
+        self.use_go_prior = bool(getattr(model_cfg.go_prior, "enabled", True))
 
         if shared_dim != graph_dim:
             raise ValueError("seq_gating.shared_dim must equal seq_final.graph_dim")
@@ -69,12 +75,6 @@ class PFAGCN(nn.Module):
             dropout=model_cfg.dccn.dropout,
         )
 
-        self.seq_final = SeqFinal(
-            in_dim=dccn_channels,
-            N_C=self.num_functions,
-            proj=model_cfg.seq_final.metric_dim,
-            out_ch=graph_dim,
-        )
         self.seq_gating = SeqGating(
             d_shared=shared_dim,
             d_esm=seq_dim,
@@ -83,15 +83,12 @@ class PFAGCN(nn.Module):
             dropout=model_cfg.seq_gating.dropout,
         )
 
-        self.protein_gate = nn.Linear(shared_dim, graph_dim)
-        self.function_gate = nn.Linear(shared_dim, graph_dim)
-        nn.init.xavier_uniform_(self.protein_gate.weight)
-        nn.init.zeros_(self.protein_gate.bias)
-        nn.init.xavier_uniform_(self.function_gate.weight)
-        nn.init.zeros_(self.function_gate.bias)
-
-        self.protein_norm = nn.LayerNorm(graph_dim)
-        self.function_norm = nn.LayerNorm(graph_dim)
+        self.seq_final = SeqFinal(
+            in_dim= shared_dim,
+            N_C=self.num_functions,
+            proj=model_cfg.seq_final.metric_dim,
+            out_ch=graph_dim,
+        )
 
         self.protein_block = AdaptiveProteinBlock(
             d_in=graph_dim,
@@ -129,6 +126,7 @@ class PFAGCN(nn.Module):
             raise ValueError("seq_embeddings must be a 3D tensor (batch, length, dim).")
 
         batch, seqlen, feat_dim = seq_embeddings.shape
+        print("batch, seqlen, features:", [batch, seqlen, feat_dim])
         expected_dim = self.config.model.seq_embeddings.feature_dim
         if feat_dim != expected_dim:
             raise ValueError(
@@ -141,12 +139,17 @@ class PFAGCN(nn.Module):
         device = seq_embeddings.device
         mask_bool, lengths_tensor = self._normalise_mask(lengths, mask, batch, seqlen, device)
 
+        if not self.use_go_prior:
+            go_prior = None
+        elif go_prior is None:
+            log.debug("GO prior enabled but missing; proceeding without it for this batch.")
+
         embeddings_projected = self.dccn_input(seq_embeddings)
+        print("\n\n\nEmbeddings_projected", embeddings_projected.shape)
         conv_features = self.dccn(embeddings_projected, mask=mask_bool)
+        print("\n\n\nConv_features", conv_features.shape)
 
-        pooled = self._masked_mean(conv_features, mask_bool)
-        protein_init, function_init = self._initial_graph_features(pooled)
-
+        
         gating_repr = self.seq_gating(
             H_esm=seq_embeddings,
             H_dcc=conv_features,
@@ -154,17 +157,33 @@ class PFAGCN(nn.Module):
             mask=mask_bool,
         )
 
-        protein_init = self.protein_norm(protein_init + self.protein_gate(gating_repr))
-        global_gate = self.function_gate(gating_repr).mean(dim=0, keepdim=True)
-        function_init = self.function_norm(function_init + global_gate)
+        print("\n\n\nGating_repr", gating_repr.shape)
+        if self.use_protein_prior and protein_prior is None:
+            protein_prior = self._build_protein_prior(gating_repr)
+        elif not self.use_protein_prior:
+            protein_prior = None
 
+
+        protein_init, function_init = self._initial_graph_features(gating_repr)
+        print("\n\n\nProtein_init (initial)", protein_init.shape)
+        print("\n\n\nFunction_init (initial)", function_init.shape)
+
+        # print("\n\n\nProtein prior", protein_prior.shape)
         protein_embeddings = self._run_protein_block(protein_init, protein_prior)
+        print("\n\n\nProtein_embeddings", protein_embeddings.shape) 
+
+        # print("\n\n\nGO prior", go_prior.shape)
         function_embeddings = self._run_function_block(function_init, go_prior)
+        print("\n\n\nFunction_embeddings", function_embeddings.shape) 
 
         logits = self.head(function_embeddings, protein_embeddings)
+        print("\n\n\nLogits", logits.shape) 
+
         protein_adj, function_adj = self._build_adjacencies(
             protein_embeddings, function_embeddings
         )
+        print("\n\n\nProtein_adj", protein_adj.shape) 
+        print("\n\n\nFunction_adj", function_adj.shape) 
 
         return Output(
             logits=logits,
@@ -210,15 +229,9 @@ class PFAGCN(nn.Module):
     def _initial_graph_features(
         self, protein_repr: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        metric = self.seq_final.met_proj(protein_repr)
-        a = metric.unsqueeze(1)
-        b = metric.unsqueeze(0)
-        comp = torch.cat((a, b, torch.abs(a - b), a * b), dim=-1)
-        pairwise = self.seq_final.norm(self.seq_final.mlp(comp))
 
-        diag_index = torch.arange(metric.size(0), device=pairwise.device)
-        protein_features = pairwise[diag_index, diag_index]
-        function_features = self.seq_final.go_proj(protein_repr).mean(dim=1)
+        protein_features = self.seq_final.prot_proj(protein_repr)
+        function_features = self.seq_final.go_proj(protein_repr)
         return protein_features, function_features
 
     def _run_protein_block(
@@ -246,6 +259,23 @@ class PFAGCN(nn.Module):
                 raise ValueError("go_prior must match the number of functions.")
             go_prior = go_prior.to(function_init.device, dtype=function_init.dtype)
         return self.function_block(function_init, go_prior)
+
+    def _build_protein_prior(self, pooled: torch.Tensor) -> torch.Tensor:
+        """Construct a symmetric, non-negative protein prior from pooled features."""
+
+        if pooled.size(0) == 0:
+            return torch.zeros((0, 0), device=pooled.device, dtype=pooled.dtype)
+
+        method = str(self.protein_prior_method).lower()
+        if method == "identity":
+            return torch.eye(pooled.size(0), device=pooled.device, dtype=pooled.dtype)
+        if method != "cosine":
+            log.warning("Unknown protein prior method '%s'; defaulting to cosine similarity.", method)
+
+        normed = F.normalize(pooled, dim=1)
+        cosine = torch.matmul(normed, normed.T)
+        return torch.clamp(cosine, min=0.0)
+
 
     def _build_adjacencies(
         self,
