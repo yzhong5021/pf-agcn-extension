@@ -3,13 +3,14 @@
 
 seq_embeddings:
   cache_path: null
+  backend: esm  # options: esm, prost
   feature_dim: 128
-  seq_len: 512
+  seq_len: 512 # max length for sequence embeddings
   dtype: float32
 prot_prior:
   enabled: true
-  method: blast # or cosine for esm embeddings
-  blastp_bin: blastp
+  method: cosine # or blast
+  blastp_exec: "ncbi-blast-2.17.0+/bin/blastp.exe"
   evalue_threshold: 1.0e-05
   cache_path: null
   top_p_mass: 0.9
@@ -27,7 +28,7 @@ dccn:
   dilation: 2
   dropout: 0.1
 seq_gating:
-  shared_dim: 128
+  shared_dim: 128 # final entrance to graphs.
   esm_dim:  ${..seq_embeddings.feature_dim}
   dccn_channels: ${..dccn.channels}
   attn_hidden: 128

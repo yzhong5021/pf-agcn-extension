@@ -1,0 +1,68 @@
+# configs/system/kaggle.yaml
+# Runtime settings for Kaggle notebook sessions backed by a single NVIDIA T4.
+
+seed: 42
+cudnn_deterministic: true
+cudnn_benchmark: false
+
+# --- Compute / precision ---
+device: gpu
+precision: "fp16"
+amp: true
+
+# --- Data loading ---
+num_workers: 2
+prefetch_factor: 2
+pin_memory: true
+persistent_workers: false
+
+# --- Paths ---
+cache_dir: /kaggle/working/cache
+save_dir: /kaggle/working
+checkpoint_dir: /kaggle/working/checkpoints
+checkpoint_interval_epochs: null
+resume: false
+
+# --- Experiment tracking ---
+mlflow:
+  tracking_uri: null
+  experiment_name: pfagcn_kaggle
+  artifact_root: null
+
+# --- Distributed setup ---
+distributed:
+  enabled: false
+  backend: null
+  find_unused_parameters: false
+  timeout_seconds: 1800
+
+# --- Preemptible handling ---
+preemptible:
+  enabled: false
+  save_on_sigterm: false
+  sigterm_grace_seconds: 0
+
+# --- Priors/embeddings policy ---
+rebuild_priors: false
+rebuild_embeddings: false
+
+# --- Logging cadence ---
+log_every: 20
+val_every_epochs: 1
+
+# --- Environment thread caps ---
+env:
+  OMP_NUM_THREADS: 2
+  MKL_NUM_THREADS: 2
+  NUMEXPR_NUM_THREADS: 2
+  TORCH_NUM_THREADS: 2
+
+# --- Hydra runtime ---
+hydra:
+  run:
+    dir: /kaggle/working/results/runs/${now:%Y%m%d-%H%M%S}
+  job:
+    chdir: true
+  sweep:
+    dir: /kaggle/working/results/sweeps/
+    subdir: ${hydra.job.num}

@@ -1,0 +1,23 @@
+# configs/kaggle_config.yaml
+# Default Hydra stack for Kaggle notebooks leveraging a single T4 GPU.
+
+defaults:
+  - data_config: kaggle
+  - task: pf_agcn
+  - model: kaggle_pf_agcn
+  - train@_here_: kaggle_train
+  - eval: kaggle
+  - hpo: optuna_search
+  - system: kaggle
+  - _self_
+
+experiment_name: "pfagcn_kaggle_t4"
+resume: false
+
+training: {}
+optimizer: {}
+scheduler: {}
+data: {}
+evaluation: {}
+
+aspect: null

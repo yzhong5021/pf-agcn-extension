@@ -27,15 +27,23 @@ from modules.dataloader import (
     parse_ground_truth_table,
 )
 from utils.esm_embed import ESM_Embed
+from utils.prost_embed import ProstEmbed
 from utils.go_prior import Go_Prior
 from utils.prot_prior import prot_prior_blast
 
 log = logging.getLogger(__name__)
 
 ASPECT_CHOICES = {"MF", "BP", "CC"}
-ESM_CACHE_ROOT = (PROJECT_ROOT / "data" / "esm_cache").resolve()
-ESM_MODEL_CACHE_DIR = (ESM_CACHE_ROOT / "models").resolve()
-_ESM_EMBEDDER: Optional[ESM_Embed] = None
+EMBED_BACKENDS = {"esm", "prost"}
+EMBED_CACHE_ROOTS = {
+    "esm": (PROJECT_ROOT / "data" / "esm_cache").resolve(),
+    "prost": (PROJECT_ROOT / "data" / "prost_cache").resolve(),
+}
+EMBEDDER_FACTORIES = {
+    "esm": ESM_Embed,
+    "prost": ProstEmbed,
+}
+_EMBEDDER_SINGLETONS: Dict[str, Any] = {}
 
 
 @dataclass
@@ -50,6 +58,7 @@ class ManifestBundle:
     go_prior_path: Path
     terms: Sequence[str]
     feature_dim: int
+    embedding_backend: str
 
 
 def _coerce_path(value: Optional[str]) -> Optional[Path]:
@@ -61,22 +70,41 @@ def _coerce_path(value: Optional[str]) -> Optional[Path]:
     return path
 
 
-def _embedding_cache_path(entry_id: str) -> Path:
+def _embedding_cache_path(entry_id: str, backend: str) -> Path:
+    root = EMBED_CACHE_ROOTS.get(backend)
+    if root is None:
+        raise ValueError(f"Unsupported embedding backend '{backend}'.")
+    root.mkdir(parents=True, exist_ok=True)
     safe_id = "".join(c if c.isalnum() or c in {"-", "_"} else "_" for c in entry_id)
     digest = hashlib.md5(entry_id.encode("utf-8")).hexdigest()[:8]
     filename = f"{safe_id or 'protein'}_{digest}.npy"
-    return ESM_CACHE_ROOT / filename
+    return root / filename
 
 
-def _get_esm_embedder(max_length: Optional[int]) -> ESM_Embed:
-    global _ESM_EMBEDDER
-    if _ESM_EMBEDDER is None:
-        kwargs: Dict[str, Any] = {}
-        if max_length is not None:
+def _model_cache_dir(backend: str) -> Path:
+    root = EMBED_CACHE_ROOTS.get(backend)
+    if root is None:
+        raise ValueError(f"Unsupported embedding backend '{backend}'.")
+    model_dir = (root / "models").resolve()
+    model_dir.mkdir(parents=True, exist_ok=True)
+    return model_dir
+
+
+def _get_seq_embedder(max_length: Optional[int], backend: str):
+    backend_key = backend.lower()
+    if backend_key not in EMBEDDER_FACTORIES:
+        raise ValueError(
+            f"Unsupported embedding backend '{backend}'. Expected one of {sorted(EMBEDDER_FACTORIES)}"
+        )
+    embedder = _EMBEDDER_SINGLETONS.get(backend_key)
+    if embedder is None:
+        kwargs: Dict[str, Any] = {"cache_dir": _model_cache_dir(backend_key)}
+        if backend_key == "esm" and max_length is not None:
             kwargs["max_len"] = int(max_length)
-        kwargs["cache_dir"] = ESM_MODEL_CACHE_DIR
-        _ESM_EMBEDDER = ESM_Embed(**kwargs)
-    return _ESM_EMBEDDER
+        embedder_cls = EMBEDDER_FACTORIES[backend_key]
+        embedder = embedder_cls(**kwargs)
+        _EMBEDDER_SINGLETONS[backend_key] = embedder
+    return embedder
 
 
 def _ensure_cached_embedding(
@@ -84,8 +112,9 @@ def _ensure_cached_embedding(
     sequence: str,
     *,
     max_length: Optional[int],
+    backend: str,
 ) -> tuple[Path, int, int]:
-    cache_path = _embedding_cache_path(entry_id)
+    cache_path = _embedding_cache_path(entry_id, backend)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
 
     if cache_path.exists():
@@ -93,8 +122,8 @@ def _ensure_cached_embedding(
         length, dim = array.shape
         return cache_path, int(length), int(dim)
 
-    embedder = _get_esm_embedder(max_length)
-    embeddings, mask = embedder.get_esm_embed([sequence])
+    embedder = _get_seq_embedder(max_length, backend)
+    embeddings, mask = embedder([sequence])
     residue_embeddings = embeddings[0][mask[0]].detach().cpu().numpy().astype(np.float32)
     np.save(cache_path, residue_embeddings)
     length, dim = residue_embeddings.shape
@@ -146,10 +175,17 @@ def prepare_manifests(
     feature_dim: int,
     max_length: Optional[int] = None,
     protein_prior_cfg: Optional[Mapping[str, Any]] = None,
+    embedding_backend: str = "esm",
 ) -> ManifestBundle:
     aspect = aspect.upper()
     if aspect not in ASPECT_CHOICES:
         raise ValueError(f"Unsupported aspect '{aspect}'. Expected one of {sorted(ASPECT_CHOICES)}")
+
+    backend = str(embedding_backend or "esm").lower()
+    if backend not in EMBED_BACKENDS:
+        raise ValueError(
+            f"Unsupported embedding backend '{embedding_backend}'. Expected one of {sorted(EMBED_BACKENDS)}"
+        )
 
     sources = data_cfg.get("sources", {})
     if not sources:
@@ -166,6 +202,9 @@ def prepare_manifests(
         "evalue_threshold": float(prior_cfg.get("evalue_threshold", 1e-5)),
         "blastp_bin": str(prior_cfg.get("blastp_bin", "blastp")),
     }
+    blast_exec = prior_cfg.get("blastp_exec")
+    if blast_exec:
+        blast_kwargs["blastp_exec"] = str(blast_exec)
 
     seqs_train_path = _coerce_path(sources.get("seqs_train_path"))
     terms_train_path = _coerce_path(sources.get("terms_train_path"))
@@ -253,12 +292,13 @@ def prepare_manifests(
             entry_id=entry_id,
             sequence=row.sequence,
             max_length=max_length,
+            backend=backend,
         )
         if embedding_width is None:
             embedding_width = dim
         elif embedding_width != dim:
             raise ValueError(
-                "Inconsistent ESM embedding dimensionality encountered; check cache integrity."
+                f"Inconsistent {backend} embedding dimensionality encountered; check cache integrity."
             )
         targets = _project_targets(entry_id, label_map, term_to_index, selected_terms)
         record_templates[entry_id] = {
@@ -276,8 +316,9 @@ def prepare_manifests(
 
     if feature_dim != embedding_width:
         log.warning(
-            "seq_embeddings.feature_dim=%s mismatches ESM embedding dimension %s; hydra overrides will update it.",
+            "seq_embeddings.feature_dim=%s mismatches %s embedding dimension %s; hydra overrides will update it.",
             feature_dim,
+            backend.upper(),
             embedding_width,
         )
 
@@ -293,6 +334,7 @@ def prepare_manifests(
         "num_functions": num_functions,
         "terms": selected_terms,
         "aspect": aspect,
+        "embedding_backend": backend,
     }
 
     bundle_paths: Dict[str, Path] = {}
@@ -388,4 +430,5 @@ def prepare_manifests(
         go_prior_path=prior_path,
         terms=selected_terms,
         feature_dim=embedding_width,
+        embedding_backend=backend,
     )

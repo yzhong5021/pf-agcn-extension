@@ -149,6 +149,7 @@ def _ensure_manifests(cfg: DictConfig, aspect: str) -> List[str]:
     feature_dim = int(seq_cfg["feature_dim"])
     max_len_val = seq_cfg.get("seq_len")
     max_length = int(max_len_val) if max_len_val else None
+    backend = str(seq_cfg.get("backend", "esm") or "esm").lower()
 
     existing_manifest = data_cfg.get("train_manifest")
     if existing_manifest:
@@ -166,6 +167,9 @@ def _ensure_manifests(cfg: DictConfig, aspect: str) -> List[str]:
         feature_dim_meta = meta.get("feature_dim")
         if feature_dim_meta is not None:
             overrides.append(f"model.seq_embeddings.feature_dim={int(feature_dim_meta)}")
+        backend_meta = meta.get("embedding_backend")
+        if backend_meta:
+            overrides.append(f"model.seq_embeddings.backend={backend_meta}")
         if not data_cfg.get("val_manifest"):
             overrides.append(f"data_config.val_manifest={manifest_path.as_posix()}")
         if not data_cfg.get("test_manifest"):
@@ -180,6 +184,7 @@ def _ensure_manifests(cfg: DictConfig, aspect: str) -> List[str]:
         feature_dim=feature_dim,
         max_length=max_length,
         protein_prior_cfg=prot_prior_cfg,
+        embedding_backend=backend,
     )
     overrides.extend(
         [
@@ -188,6 +193,7 @@ def _ensure_manifests(cfg: DictConfig, aspect: str) -> List[str]:
             f"data_config.test_manifest={bundle.test.as_posix()}",
             f"task.num_functions={bundle.num_functions}",
             f"model.seq_embeddings.feature_dim={bundle.feature_dim}",
+            f"model.seq_embeddings.backend={bundle.embedding_backend}",
         ]
     )
     return overrides
@@ -224,6 +230,7 @@ def _resolve_manifest_for_predict(args: argparse.Namespace) -> str:
     feature_dim = int(seq_cfg["feature_dim"])
     max_len_val = seq_cfg.get("seq_len")
     max_length = int(max_len_val) if max_len_val else None
+    backend = str(seq_cfg.get("backend", "esm") or "esm").lower()
 
     aspect = (args.aspect or cfg.get("aspect") or "").upper()
 
@@ -266,6 +273,7 @@ def _resolve_manifest_for_predict(args: argparse.Namespace) -> str:
         feature_dim=feature_dim,
         max_length=max_length,
         protein_prior_cfg=prot_prior_cfg,
+        embedding_backend=backend,
     )
     log.info("Generated inference manifest at %s", bundle.test)
     return bundle.test.as_posix()

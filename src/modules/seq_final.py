@@ -13,7 +13,7 @@ class SeqFinal(nn.Module):
         super().__init__()
         self.met_proj  = nn.Linear(in_dim, proj, bias=True) # project to metric space
 
-        self.G = nn.Parameter(torch.empty(N_C, proj))
+        self.G = nn.Parameter(torch.empty(N_C, proj)) # insert into N_C; learned GO projection
 
         comp_in = 4*proj
         self.mlp = nn.Sequential(
@@ -53,5 +53,5 @@ class SeqFinal(nn.Module):
         P_ = a.unsqueeze(0).expand(self.G.size(0), -1, -1) # (N_C, N_P, proj)
 
         comp = torch.cat([P_, G_, (P_-G_).abs(), P_*G_], dim=-1)  # (N_C,N_P,4*proj)
-
+        
         return self.norm(self.mlp(comp)) # (N_C, N_P, C)

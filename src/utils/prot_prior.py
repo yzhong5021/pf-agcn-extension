@@ -4,7 +4,7 @@ Provides helper routines for building protein-protein prior matrices used by
 PF-AGCN. Two strategies are supported:
 
 ``prot_prior_blast``
-    Uses the BLAST+ ``blastp`` binary via Biopython to score pairwise protein
+    Uses the BLAST+ ``blastp`` binary via subprocess execution to score pairwise protein
     alignments. A binary adjacency matrix is returned where an entry is set to 1
     when the BLAST E-value for that pair falls below a prescribed threshold.
 
@@ -19,9 +19,10 @@ from pathlib import Path
 import tempfile
 from typing import Optional, Sequence, Tuple, Union
 
+import os
+import subprocess
+
 from Bio import SeqIO
-from Bio.Application import ApplicationError
-from Bio.Blast.Applications import NcbiblastpCommandline
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 import torch
@@ -34,13 +35,17 @@ LOGGER = logging.getLogger(__name__)
 def prot_prior_blast(
     seqs: Sequence[str],
     evalue_threshold: float = 1e-5,
+    blastp_exec: Optional[str] = None,
     blastp_bin: str = "blastp",
+    blastp_path: Optional[str] = None,
 ) -> torch.Tensor:
     """
     Args:
         seqs: Iterable of amino-acid sequences. Each entry is treated as a BLAST query.
         evalue_threshold: E-value cutoff for retaining an alignment edge.
-        blastp_bin: Name or absolute path of the blastp`` executable.
+        blastp_exec: Optional absolute path to the ``blastp`` executable.
+        blastp_bin: Fallback executable name if no explicit path is supplied.
+        blastp_path: Optional directory or absolute path pointing to the BLAST ``blastp`` binary.
 
     Returns:
         (N, N) tensor with ones where the BLAST E-value is at or below the
@@ -48,8 +53,7 @@ def prot_prior_blast(
 
     """
 
-    if not isinstance(seqs, Sequence):
-        LOGGER.error("Error in protein prior generation: seqs must be a sequence of protein strings")
+    LOGGER.info("starting BLAST alignments for protein prior generation...")
 
     records = []
     for idx, seq in enumerate(seqs):
@@ -64,6 +68,8 @@ def prot_prior_blast(
 
     prior = torch.eye(n, dtype=torch.float32)
 
+    blastp_executable = _resolve_blastp_executable(blastp_exec, blastp_bin, blastp_path)
+
     with tempfile.TemporaryDirectory() as workdir:
         workdir_path = Path(workdir)
         query_path = workdir_path / "query.fasta"
@@ -73,30 +79,73 @@ def prot_prior_blast(
             SeqIO.write([records[i]], str(query_path), "fasta")
             for j in range(i + 1, n):
                 SeqIO.write([records[j]], str(subject_path), "fasta")
-                cline = NcbiblastpCommandline(
-                    cmd=blastp_bin,
-                    query=str(query_path),
-                    subject=str(subject_path),
-                    outfmt="6 evalue",
-                    evalue=evalue_threshold,
-                    max_target_seqs=1,
-                )
+                command = [
+                    blastp_executable,
+                    "-query",
+                    str(query_path),
+                    "-subject",
+                    str(subject_path),
+                    "-outfmt",
+                    "6 evalue",
+                    "-evalue",
+                    str(evalue_threshold),
+                    "-max_target_seqs",
+                    "5",
+                ]
                 try:
-                    stdout, stderr = cline()
-                except ApplicationError as exc:
+                    result = subprocess.run(
+                        command,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                except FileNotFoundError as exc:
                     raise RuntimeError(
-                        "blastp execution failed"
+                        f"blastp executable not found at '{blastp_executable}'."
                     ) from exc
 
-                stderr = stderr.strip()
-                if stderr:
-                    raise RuntimeError(f"blastp error: {stderr}")
+                stderr = result.stderr.strip()
+                if result.returncode != 0:
+                    message = stderr or f"return code {result.returncode}"
+                    raise RuntimeError(f"blastp execution failed: {message}")
 
-                found_hit = bool(stdout.strip())
+                if stderr:
+                    filtered_lines = []
+                    for line in stderr.splitlines():
+                        if line.strip().startswith("Warning: [blastp] Examining 5 or more matches is recommended."):
+                            LOGGER.warning("blastp warning: %s", line.strip())
+                            continue
+                        filtered_lines.append(line)
+                    if filtered_lines:
+                        raise RuntimeError(f"blastp error: {' '.join(filtered_lines)}")
+
+                found_hit = bool(result.stdout.strip())
                 if found_hit:
                     prior[i, j] = prior[j, i] = 1.0
 
     return prior
+
+
+def _resolve_blastp_executable(
+    blastp_exec: Optional[str],
+    blastp_bin: str,
+    blastp_path: Optional[str],
+) -> str:
+    """Resolve the blastp executable path from the provided hints."""
+
+    if blastp_exec:
+        return str(Path(blastp_exec).expanduser())
+
+    if blastp_path:
+        path = Path(blastp_path).expanduser()
+        name_lower = path.name.lower()
+        if path.suffix or name_lower in {"blastp", "blastp.exe"}:
+            return str(path)
+
+        exe_name = "blastp.exe" if os.name == "nt" else "blastp"
+        return str(path / exe_name)
+
+    return blastp_bin
 
 
 class ESMProjector(nn.Module):
@@ -150,6 +199,8 @@ def prot_prior_esm(
     latent = F.normalize(latent, p=2, dim=1)
     cosine_sim = torch.matmul(latent, latent.transpose(0, 1)).clamp(-1.0, 1.0)
     cosine_dist = 1.0 - cosine_sim
+
+    LOGGER.info("Created cosine distance protein similarity priors.")
 
     return cosine_dist
 

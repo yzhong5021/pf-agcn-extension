@@ -1,0 +1,33 @@
+# configs/data_config/kaggle.yaml
+# Data paths tuned for Kaggle notebooks where inputs mount under /kaggle/input.
+
+dataset_root: ${oc.env:KAGGLE_DATASET_ROOT,/kaggle/input/pf-agcn}
+
+sources:
+  seqs_train_path: ${.dataset_root}/train/train_sequences.fasta
+  terms_train_path: ${.dataset_root}/train/train_terms.tsv
+  seqs_val_path: ${.dataset_root}/val/val_sequences.fasta
+  terms_val_path: ${.dataset_root}/val/val_terms.tsv
+  seqs_test_path: ${.dataset_root}/test/test_sequences.fasta
+  terms_test_path: ${.dataset_root}/test/test_terms.tsv
+  ia_path: ${.dataset_root}/ontology/ia.txt
+  go_path: ${.dataset_root}/ontology/go-basic.obo
+
+train_csv: ${.dataset_root}/splits/train.csv
+val_csv:   ${.dataset_root}/splits/val.csv
+test_csv:  ${.dataset_root}/splits/test.csv
+embeddings_npz: ${system.cache_dir}/esm1b_pfagcn_kaggle.npz
+go_prior_npz:   ${system.cache_dir}/go_prior_pfagcn_kaggle.npz
+
+go_prior:
+  obo_path: ${hydra:runtime.cwd}/data/ontology/go-basic.obo
+  train_split_csv: ${.train_csv}
+  top_k:
+    MF: 768
+    BP: 1536
+    CC: 768
+
+batch_size: 24
+train_manifest: null
+val_manifest: null
+test_manifest: null

@@ -15,6 +15,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+log = logging.getLogger(__name__)
+
 try:
     from model.config import PFAGCNConfig  # type: ignore
 except ImportError:  # pragma: no cover
@@ -23,6 +25,7 @@ from src.modules.adaptive_function import AdaptiveFunctionBlock
 from src.modules.adaptive_protein import AdaptiveProteinBlock
 from src.modules.dccn import DCCN_1D
 from src.modules.head import ClassificationHead
+from src.modules.pooling import AdaptivePooling  # TEMP[2025-10-19 Codex]
 from src.modules.seq_final import SeqFinal
 from src.modules.seq_gating import SeqGating
 
@@ -90,6 +93,18 @@ class PFAGCN(nn.Module):
             out_ch=graph_dim,
         )
 
+        # TEMP[2025-10-19 Codex]: attention pooling to collapse pairwise affinities.
+        self.protein_pool = AdaptivePooling(
+            embed_dim=graph_dim,
+            attn_hidden=model_cfg.seq_gating.attn_hidden,
+            dropout=model_cfg.seq_gating.dropout,
+        )
+        self.function_pool = AdaptivePooling(
+            embed_dim=graph_dim,
+            attn_hidden=model_cfg.seq_gating.attn_hidden,
+            dropout=model_cfg.seq_gating.dropout,
+        )
+
         self.protein_block = AdaptiveProteinBlock(
             d_in=graph_dim,
             d_attn=model_cfg.adaptive_protein.attention_dim,
@@ -126,7 +141,7 @@ class PFAGCN(nn.Module):
             raise ValueError("seq_embeddings must be a 3D tensor (batch, length, dim).")
 
         batch, seqlen, feat_dim = seq_embeddings.shape
-        print("batch, seqlen, features:", [batch, seqlen, feat_dim])
+        # print("batch, seqlen, features:", [batch, seqlen, feat_dim])
         expected_dim = self.config.model.seq_embeddings.feature_dim
         if feat_dim != expected_dim:
             raise ValueError(
@@ -145,9 +160,9 @@ class PFAGCN(nn.Module):
             log.debug("GO prior enabled but missing; proceeding without it for this batch.")
 
         embeddings_projected = self.dccn_input(seq_embeddings)
-        print("\n\n\nEmbeddings_projected", embeddings_projected.shape)
+        # print("\n\n\nEmbeddings_projected", embeddings_projected.shape)
         conv_features = self.dccn(embeddings_projected, mask=mask_bool)
-        print("\n\n\nConv_features", conv_features.shape)
+        # print("\n\n\nConv_features", conv_features.shape)
 
         
         gating_repr = self.seq_gating(
@@ -157,33 +172,39 @@ class PFAGCN(nn.Module):
             mask=mask_bool,
         )
 
-        print("\n\n\nGating_repr", gating_repr.shape)
+        # print("\n\n\nGating_repr", gating_repr.shape)
+
+        protein_init, function_init = self._initial_graph_features(gating_repr)
+        # print("\n\n\nProtein_init (initial)", protein_init.shape)
+        # print("\n\n\nFunction_init (initial)", function_init.shape)
+
+        ### TEMPORARY POOLING - BETTER TO EDIT SEQ_FINAL.
+        ### INSERT POOLING MODULE HERE. SHOULD TURN (N_P|N_C, N_P, C) INTO (N_P|N_C, C) DEPENDING ON FUNCTION OR PROTEIN
+        # TEMP[2025-10-19 Codex]: reuse attention pooling to obtain graph-ready embeddings.
+        protein_init = self.protein_pool(protein_init)
+        function_init = self.function_pool(function_init)
+
         if self.use_protein_prior and protein_prior is None:
-            protein_prior = self._build_protein_prior(gating_repr)
+            protein_prior = self._build_protein_prior(protein_init)  # TEMP[2025-10-19 Codex]
         elif not self.use_protein_prior:
             protein_prior = None
 
-
-        protein_init, function_init = self._initial_graph_features(gating_repr)
-        print("\n\n\nProtein_init (initial)", protein_init.shape)
-        print("\n\n\nFunction_init (initial)", function_init.shape)
-
         # print("\n\n\nProtein prior", protein_prior.shape)
         protein_embeddings = self._run_protein_block(protein_init, protein_prior)
-        print("\n\n\nProtein_embeddings", protein_embeddings.shape) 
+        # print("\n\n\nProtein_embeddings", protein_embeddings.shape) 
 
         # print("\n\n\nGO prior", go_prior.shape)
         function_embeddings = self._run_function_block(function_init, go_prior)
-        print("\n\n\nFunction_embeddings", function_embeddings.shape) 
+        # print("\n\n\nFunction_embeddings", function_embeddings.shape) 
 
         logits = self.head(function_embeddings, protein_embeddings)
-        print("\n\n\nLogits", logits.shape) 
+        # print("\n\n\nLogits", logits.shape) 
 
         protein_adj, function_adj = self._build_adjacencies(
             protein_embeddings, function_embeddings
         )
-        print("\n\n\nProtein_adj", protein_adj.shape) 
-        print("\n\n\nFunction_adj", function_adj.shape) 
+        # print("\n\n\nProtein_adj", protein_adj.shape) 
+        # print("\n\n\nFunction_adj", function_adj.shape) 
 
         return Output(
             logits=logits,

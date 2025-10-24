@@ -62,3 +62,13 @@ class ESM_Embed(nn.Module):
         input_ids = batch["input_ids"]
         residue_mask = (input_ids != self.pad_id) & (input_ids != self.cls_id) & (input_ids != self.eos_id)
         return outputs.last_hidden_state, residue_mask
+
+    @torch.inference_mode()
+    def forward(self, seqs: Sequence[str]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """nn.Module forward passthrough for unified embedder interface."""
+        return self.get_esm_embed(seqs)
+
+    @torch.inference_mode()
+    def get_embeddings(self, seqs: Sequence[str]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Alias mirroring Prost wrapper interface."""
+        return self.get_esm_embed(seqs)

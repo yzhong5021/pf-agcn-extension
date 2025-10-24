@@ -472,7 +472,7 @@ class MLflowModelSaver(Callback):
         if not isinstance(logger, MLFlowLogger):
             return
         run_id = logger.run_id
-        tracking_uri = logger.tracking_uri
+        tracking_uri = logger._tracking_uri
         mlflow.set_tracking_uri(tracking_uri)
         active_run = mlflow.active_run()
         started_run = False
@@ -480,7 +480,7 @@ class MLflowModelSaver(Callback):
             mlflow.start_run(run_id=run_id)
             started_run = True
         try:
-            mlflow.pytorch.log_model(pl_module.model, artifact_path="model")
+            mlflow.pytorch.log_model(pl_module.model, name="model")
         finally:
             if started_run:
                 mlflow.end_run()
@@ -490,7 +490,8 @@ class MLflowModelSaver(Callback):
 def _prepare_mlflow_logger(cfg: DictConfig, base_dir: Path) -> MLFlowLogger:
     tracking_dir = (base_dir / "mlruns").resolve()
     tracking_dir.mkdir(parents=True, exist_ok=True)
-    tracking_uri = tracking_dir.as_uri()
+    # Explicit file: scheme avoids Lightning producing invalid Windows checkpoint paths.
+    tracking_uri = f"file:{tracking_dir.as_posix()}"
     logger = MLFlowLogger(
         experiment_name=cfg.get("experiment_name", "pfagcn"),
         tracking_uri=tracking_uri,

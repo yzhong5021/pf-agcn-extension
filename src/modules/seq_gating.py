@@ -49,11 +49,11 @@ class SeqGating(nn.Module):
         H_dcc: torch.Tensor,
         lengths: Optional[torch.Tensor] = None,
         mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:  # (N,L,1280),(N,L,C_dcc)
-        N, L, _ = H_esm.shape # N = batch size, L = max sequence length
+    ) -> torch.Tensor:  # (N_P,L,1280),(N_P,L,C_dcc)
+        N_P, L, _ = H_esm.shape # N = batch size, L = max sequence length
 
         if mask is not None:
-            if mask.shape != (N, L):
+            if mask.shape != (N_P, L):
                 raise ValueError("mask must be shaped (batch, length).")
             mask_bool = mask.to(device=H_esm.device, dtype=torch.bool)
             lengths = mask_bool.sum(dim=1, dtype=torch.long)
@@ -70,18 +70,18 @@ class SeqGating(nn.Module):
         # project esm and dcc embeddings to shared d_shared dimension
         E = self.dropout(self.proj_esm(H_esm))
 
-        D = self.dropout(self.proj_dcc(H_dcc))   # both (N,L,d_shared)
+        D = self.dropout(self.proj_dcc(H_dcc))   # both (N_P,L,d_shared)
 
         E = E.masked_fill(~mask_expanded, 0.0)
         D = D.masked_fill(~mask_expanded, 0.0)
 
-        G = torch.sigmoid(self.gate_tok(torch.cat([E, D], dim=-1)))  # (N,L,d_shared) ; generate token-wise gating weights
-        H = G*E + (1.0-G)*D                                          # (N,L,d_shared) ; fuse esm and dcc embeddings
+        G = torch.sigmoid(self.gate_tok(torch.cat([E, D], dim=-1)))  # (N_P,L,d_shared) ; generate token-wise gating weights
+        H = G*E + (1.0-G)*D                                          # (N_P,L,d_shared) ; fuse esm and dcc embeddings
         H = H.masked_fill(~mask_expanded, 0.0)
 
-        scores = self.scorer(H)                                      # (N,L,1) ; score each token for attention-based pooling
+        scores = self.scorer(H)                                      # (N_P,L,1) ; score each token for attention-based pooling
         scores = scores.masked_fill(~mask_expanded, float('-inf'))
         w = torch.softmax(scores, dim=1)                             # normalize
         w = torch.nan_to_num(w, nan=0.0)
-        x = (H * w).sum(dim=1)                                       # (N,d_shared) ; pooled embedding
-        return self.ln(x)                                            # (N,d_shared) ; normalized via layernorm
+        x = (H * w).sum(dim=1)                                       # (N_P,d_shared) ; pooled embedding
+        return self.ln(x)                                            # (N_P,d_shared) ; normalized via layernorm
