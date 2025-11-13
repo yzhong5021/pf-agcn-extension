@@ -24,6 +24,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from preprocessing import ManifestBundle, prepare_manifests
 from train.training import main as train_main
+from utils.system_runtime import apply_system_env
 
 log = logging.getLogger(__name__)
 
@@ -205,6 +206,7 @@ def run_train(config_path: str, config_name: str, aspect: str) -> None:
 
     @hydra.main(version_base=None, config_path=hydra_config_path, config_name=config_name)
     def _train(cfg: DictConfig) -> None:
+        apply_system_env(cfg)
         manifest_overrides = _ensure_manifests(cfg, aspect_upper)
         if manifest_overrides:
             cfg = OmegaConf.merge(cfg, OmegaConf.from_cli(manifest_overrides))
@@ -224,6 +226,7 @@ def _resolve_manifest_for_predict(args: argparse.Namespace) -> str:
     if args.aspect:
         cli_overrides.append(f"aspect={args.aspect.upper()}")
     cfg = _compose_config(config_path.parent, config_path.stem, cli_overrides)
+    apply_system_env(cfg)
     data_cfg = OmegaConf.to_container(cfg.data_config, resolve=True)
     seq_cfg = OmegaConf.to_container(cfg.model.seq_embeddings, resolve=True)
     prot_prior_cfg = OmegaConf.to_container(cfg.model.prot_prior, resolve=True)

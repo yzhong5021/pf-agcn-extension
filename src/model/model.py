@@ -142,6 +142,7 @@ class PFAGCN(nn.Module):
 
         batch, seqlen, feat_dim = seq_embeddings.shape
         # print("batch, seqlen, features:", [batch, seqlen, feat_dim])
+        
         expected_dim = self.config.model.seq_embeddings.feature_dim
         if feat_dim != expected_dim:
             raise ValueError(
@@ -180,9 +181,9 @@ class PFAGCN(nn.Module):
 
         ### TEMPORARY POOLING - BETTER TO EDIT SEQ_FINAL.
         ### INSERT POOLING MODULE HERE. SHOULD TURN (N_P|N_C, N_P, C) INTO (N_P|N_C, C) DEPENDING ON FUNCTION OR PROTEIN
-        # TEMP[2025-10-19 Codex]: reuse attention pooling to obtain graph-ready embeddings.
-        protein_init = self.protein_pool(protein_init)
-        function_init = self.function_pool(function_init)
+        # TEMP: reuse attention pooling to obtain graph-ready embeddings.
+        # protein_init = self.protein_pool(protein_init)
+        # function_init = self.function_pool(function_init)
 
         if self.use_protein_prior and protein_prior is None:
             protein_prior = self._build_protein_prior(protein_init)  # TEMP[2025-10-19 Codex]

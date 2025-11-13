@@ -1,0 +1,38 @@
+# configs/system/hpc_supercloud.yaml
+# MIT SuperCloud-friendly runtime defaults.
+
+seed: 42
+cudnn_deterministic: true
+cudnn_benchmark: false
+
+paths:
+  cache_dir: /state/partition1/pf_agcn/cache
+  data_root: /state/partition1/pf_agcn/data
+  results_root: /state/partition1/pf_agcn/results
+
+mlflow:
+  tracking_uri: file:/state/partition1/pf_agcn/mlruns
+  artifact_root: file:/state/partition1/pf_agcn/mlruns
+  experiment_name: pfagcn_supercloud
+  run_name: pf-agcn-hpc
+
+env:
+  OMP_NUM_THREADS: 32
+  MKL_NUM_THREADS: 32
+  NUMEXPR_NUM_THREADS: 32
+  TORCH_NUM_THREADS: 32
+  HYDRA_FULL_ERROR: 1
+
+slurm:
+  job_name: pfagcn
+  partition: normal
+  qos: high
+  account: null
+  constraint: xeon-g6
+  nodes: 1
+  ntasks_per_node: 1
+  cpus_per_task: 32
+  gpus_per_task: 1
+  gres: volta:1
+  time: "24:00:00"
+  output_dir: logs/hpc

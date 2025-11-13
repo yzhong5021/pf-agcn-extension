@@ -15,7 +15,7 @@ class ESM_Embed(nn.Module):
 
     def __init__(
         self,
-        model_name: str = "facebook/esm1b_t33_650M_UR50S",
+        model_name: str = "facebook/esm2_t33_650M_UR50D",
         max_len: int = 1022,
         truncate_len: int = 1000,
         device: str | torch.device = "cpu",

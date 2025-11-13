@@ -36,6 +36,7 @@ from cafaeval.graph import Prediction as CafaPrediction
 from src.model.model import PFAGCN
 from src.modules.dataloader import build_manifest_dataloader, load_ia_weights
 from src.modules.loss import BCEWithLogits
+from src.utils.system_runtime import apply_system_env, merged_mlflow_settings
 
 log = logging.getLogger(__name__)
 
@@ -488,14 +489,19 @@ class MLflowModelSaver(Callback):
 
 
 def _prepare_mlflow_logger(cfg: DictConfig, base_dir: Path) -> MLFlowLogger:
-    tracking_dir = (base_dir / "mlruns").resolve()
-    tracking_dir.mkdir(parents=True, exist_ok=True)
-    # Explicit file: scheme avoids Lightning producing invalid Windows checkpoint paths.
-    tracking_uri = f"file:{tracking_dir.as_posix()}"
+    mlflow_cfg = merged_mlflow_settings(cfg)
+    tracking_uri = mlflow_cfg.get("tracking_uri")
+    artifact_location = mlflow_cfg.get("artifact_root")
+    if not tracking_uri:
+        tracking_dir = (base_dir / "mlruns").resolve()
+        tracking_dir.mkdir(parents=True, exist_ok=True)
+        tracking_uri = f"file:{tracking_dir.as_posix()}"
+        artifact_location = artifact_location or tracking_uri
     logger = MLFlowLogger(
-        experiment_name=cfg.get("experiment_name", "pfagcn"),
+        experiment_name=mlflow_cfg.get("experiment_name", cfg.get("experiment_name", "pfagcn")),
         tracking_uri=tracking_uri,
-        run_name=cfg.get("run_name", "pf-agcn"),
+        run_name=mlflow_cfg.get("run_name", cfg.get("run_name", "pf-agcn")),
+        artifact_location=artifact_location,
     )
     resolved_cfg = OmegaConf.to_container(cfg, resolve=True)
     logger.log_hyperparams(flatten_config(resolved_cfg))
@@ -518,6 +524,7 @@ def main(cfg: DictConfig) -> None:
     """Hydra application entry point."""
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    apply_system_env(cfg)
     base_dir = Path(get_original_cwd())
     seed_everything(int(cfg.training.get("seed", 42)), workers=True)
     prot_prior_cfg = OmegaConf.to_container(

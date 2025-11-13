@@ -8,10 +8,11 @@ import sys
 from pathlib import Path
 from typing import Dict
 
+import mlflow
 import mlflow.pytorch
 import numpy as np
 import torch
-import yaml
+from omegaconf import DictConfig, OmegaConf
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -21,6 +22,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from modules.dataloader import build_manifest_dataloader
+from utils.system_runtime import apply_system_env, merged_mlflow_settings
 
 log = logging.getLogger(__name__)
 
@@ -54,11 +56,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def load_config(path: Path) -> Dict:
+def load_config(path: Path) -> DictConfig:
     if not path.exists():
         raise FileNotFoundError(f"Config not found: {path}")
-    with path.open("r", encoding="utf-8") as handle:
-        return yaml.safe_load(handle)
+    return OmegaConf.load(path)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -79,9 +80,14 @@ def main(argv: list[str] | None = None) -> None:
 
     config_path = Path(args.config)
     cfg = load_config(config_path)
-    data_cfg = cfg.get("data_config", {})
-    model_cfg = cfg.get("model", {})
-    protein_prior_cfg = model_cfg.get("prot_prior")
+    apply_system_env(cfg)
+    mlflow_settings = merged_mlflow_settings(cfg)
+    tracking_uri = mlflow_settings.get("tracking_uri")
+    if tracking_uri:
+        mlflow.set_tracking_uri(tracking_uri)
+    data_cfg = OmegaConf.to_container(cfg.get("data_config"), resolve=True) if cfg.get("data_config") else {}
+    model_cfg = OmegaConf.to_container(cfg.get("model"), resolve=True) if cfg.get("model") else {}
+    protein_prior_cfg = model_cfg.get("prot_prior") if isinstance(model_cfg, dict) else None
     if args.batch_size is not None:
         data_cfg = dict(data_cfg)
         data_cfg["batch_size"] = args.batch_size

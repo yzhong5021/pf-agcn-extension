@@ -38,10 +38,9 @@ class SeqFinal(nn.Module):
 
     def prot_proj(self, x):  # protein-protein: (N_P, d) -> (N_P, N_P, C)
         a = self.met_proj(x)                  # (N_P, proj)
-        A = a[:, None, :].expand(a.size(0), a.size(0), -1)                      # (N_P, N_P, proj)
-        B = a[None, :, :].expand(a.size(0), a.size(0), -1)                      # (N_P, N_P, proj)
+        A = a.unsqueeze(1).expand(a.size(0), a.size(0), -1)                      # (N_P, N_P, proj)
+        B = a.unsqueeze(0).expand(a.size(0), a.size(0), -1)                      # (N_P, N_P, proj)
 
-        print(A.shape, B.shape)
         comp = torch.cat([A, B, (A-B).abs(), A*B], dim=-1)  # (N_P,N_P,4*proj); learn simple distance/agreement metrics
 
         return self.norm(self.mlp(comp)) # (N_P, N_P, C)
