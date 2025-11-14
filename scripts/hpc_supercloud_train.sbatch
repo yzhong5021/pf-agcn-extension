@@ -19,8 +19,8 @@ set -euo pipefail
 module load anaconda/2023a
 module load cuda/12.1
 
-CONDA_ENV=${CONDA_ENV:-pfagcn}
-source activate "${CONDA_ENV}"
+CONDA_ENV=${CONDA_ENV:-pf-agcn}
+eval "$(conda shell.bash hook)"; conda activate "${CONDA_ENV}"
 
 cd "${SLURM_SUBMIT_DIR}"
 mkdir -p logs/hpc
@@ -31,4 +31,4 @@ export MKL_NUM_THREADS=${MKL_NUM_THREADS:-32}
 export NUMEXPR_NUM_THREADS=${NUMEXPR_NUM_THREADS:-32}
 export HYDRA_FULL_ERROR=1
 
-python scripts/main.py train --config-name hpc_config --aspect "${ASPECT}"
+srun python -u scripts/main.py train --config-path configs --config-name hpc_config --aspect "${ASPECT}"                                                       
