@@ -6,10 +6,10 @@ train_dir: ${.dataset_root}/Train
 smoke_dir: ${.dataset_root}/smoke
 
 sources:
-  seqs_path: ${.smoke_dir}/train_sequences_smoke.fasta
-  terms_path: ${.smoke_dir}/train_terms_smoke.tsv
-  ia_path: ${.dataset_root}/IA.tsv
-  go_path: ${.train_dir}/go-basic.obo
+  seqs_path: ${..smoke_dir}/train_sequences_smoke.fasta
+  terms_path: ${..smoke_dir}/train_terms_smoke.tsv
+  ia_path: ${..dataset_root}/IA.tsv
+  go_path: ${..train_dir}/go-basic.obo
 
 split:
   seed: 1337

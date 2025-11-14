@@ -11,7 +11,16 @@ import argparse
 import csv
 import logging
 from pathlib import Path
-from typing import Iterable, Iterator, List, Sequence, Tuple
+import sys
+from typing import Dict, Iterator, List, Sequence, Tuple
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = PROJECT_ROOT / "src"
+for candidate in (PROJECT_ROOT, SRC_ROOT):
+    if str(candidate) not in sys.path:
+        sys.path.insert(0, str(candidate))
+
+from modules.dataloader import parse_ground_truth_table
 
 
 def parse_args() -> argparse.Namespace:
@@ -71,7 +80,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def iter_fasta_records(path: Path) -> Iterator[Tuple[str, List[str]]]:
+def iter_fasta_records(path: Path) -> Iterator[Tuple[str, str]]:
     header: str | None = None
     seq_lines: List[str] = []
     with path.open("r", encoding="utf-8") as handle:
@@ -81,51 +90,85 @@ def iter_fasta_records(path: Path) -> Iterator[Tuple[str, List[str]]]:
                 continue
             if line.startswith(">"):
                 if header is not None:
-                    yield header, seq_lines
+                    yield header, "".join(seq_lines).strip()
                 header = line
                 seq_lines = []
             else:
                 seq_lines.append(line)
         if header is not None:
-            yield header, seq_lines
+            yield header, "".join(seq_lines).strip()
 
 
 def extract_entry_id(header: str) -> str:
     cleaned = header.lstrip(">").strip()
     if not cleaned:
         raise ValueError("Encountered FASTA header without an identifier.")
-    return cleaned.split()[0]
+    first_token = cleaned.split()[0]
+    if "|" in first_token:
+        tokens = [token for token in first_token.split("|") if token]
+        if len(tokens) >= 2 and tokens[1]:
+            return tokens[1]
+    return first_token
 
 
-def write_fasta(records: Sequence[Tuple[str, List[str]]], dest: Path) -> None:
+def write_fasta(records: Sequence[Tuple[str, str]], dest: Path) -> None:
     with dest.open("w", encoding="utf-8") as handle:
-        for header, seq_lines in records:
-            handle.write(f"{header}\n")
-            for line in seq_lines:
-                handle.write(f"{line}\n")
+        for header, sequence in records:
+            sequence = sequence.replace("\n", "").strip()
+            if not sequence:
+                raise ValueError(f"Sequence for header '{header}' is empty.")
+            handle.write(f"{header}\n{sequence}\n")
 
 
-def subset_terms(
-    terms_path: Path,
+def select_sequences_with_terms(
+    fasta_path: Path,
+    desired_count: int,
+    annotated_ids: Sequence[str],
+) -> Tuple[List[Tuple[str, str]], List[str]]:
+    annotated = set(annotated_ids)
+    records: List[Tuple[str, str]] = []
+    selected_ids: List[str] = []
+    for header, sequence in iter_fasta_records(fasta_path):
+        if not sequence:
+            continue
+        entry_id = extract_entry_id(header)
+        if entry_id not in annotated:
+            continue
+        records.append((header, sequence))
+        selected_ids.append(entry_id)
+        if len(records) >= desired_count:
+            break
+    return records, selected_ids
+
+
+def load_terms_lookup(path: Path) -> Dict[str, List[Dict[str, str]]]:
+    df = parse_ground_truth_table(path)
+    if df.empty:
+        raise RuntimeError(f"No GO term rows found in {path}.")
+    lookup: Dict[str, List[Dict[str, str]]] = {}
+    for entry_id, group in df.groupby("entry_id"):
+        lookup[entry_id] = [
+            {"EntryID": entry_id, "term": row.term, "aspect": row.aspect} for row in group.itertuples(index=False)
+        ]
+    return lookup
+
+
+def write_terms_subset(
+    terms_lookup: Dict[str, List[Dict[str, str]]],
     dest_path: Path,
-    keep_ids: Iterable[str],
+    keep_ids: Sequence[str],
 ) -> int:
-    keep = set(keep_ids)
+    fieldnames = ["EntryID", "term", "aspect"]
     written = 0
-    with terms_path.open("r", encoding="utf-8", newline="") as src, dest_path.open(
-        "w", encoding="utf-8", newline=""
-    ) as dst:
-        reader = csv.DictReader(src, delimiter="\t")
-        if reader.fieldnames is None:
-            raise ValueError(f"{terms_path} is missing a header row.")
-        writer = csv.DictWriter(dst, fieldnames=reader.fieldnames, delimiter="\t")
+    with dest_path.open("w", encoding="utf-8", newline="") as dst:
+        writer = csv.DictWriter(dst, fieldnames=fieldnames, delimiter="\t")
         writer.writeheader()
-        entry_field = reader.fieldnames[0]
-        for row in reader:
-            entry_id = row.get(entry_field)
-            if entry_id in keep:
+        for entry_id in keep_ids:
+            for row in terms_lookup.get(entry_id, []):
                 writer.writerow(row)
                 written += 1
+    if written == 0:
+        raise RuntimeError("No GO term rows matched the selected sequences; aborting smoke subset creation.")
     return written
 
 
@@ -144,18 +187,23 @@ def main() -> None:
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    logging.info("Reading sequences from %s", sequences_src)
-    selected_records: List[Tuple[str, List[str]]] = []
-    for header, seq_lines in iter_fasta_records(sequences_src):
-        selected_records.append((header, seq_lines))
-        if len(selected_records) >= args.num_sequences:
-            break
+    logging.info("Loading GO annotations from %s", terms_src)
+    terms_lookup = load_terms_lookup(terms_src)
+    annotated_ids = list(terms_lookup.keys())
 
+    logging.info("Reading sequences from %s", sequences_src)
+    selected_records, keep_ids = select_sequences_with_terms(
+        sequences_src,
+        args.num_sequences,
+        annotated_ids,
+    )
     if not selected_records:
-        raise RuntimeError("No sequences read; check the source FASTA path.")
+        raise RuntimeError(
+            "No annotated sequences were found; ensure the FASTA and term files share EntryIDs."
+        )
     if len(selected_records) < args.num_sequences:
         logging.warning(
-            "Requested %d sequences but only found %d.",
+            "Requested %d annotated sequences but only found %d.",
             args.num_sequences,
             len(selected_records),
         )
@@ -163,9 +211,8 @@ def main() -> None:
     write_fasta(selected_records, sequences_dest)
     logging.info("Wrote %d sequences to %s", len(selected_records), sequences_dest)
 
-    keep_ids = [extract_entry_id(header) for header, _ in selected_records]
-    logging.info("Filtering terms in %s for %d EntryIDs", terms_src, len(keep_ids))
-    written_terms = subset_terms(terms_src, terms_dest, keep_ids)
+    logging.info("Filtering GO terms for %d EntryIDs", len(keep_ids))
+    written_terms = write_terms_subset(terms_lookup, terms_dest, keep_ids)
     logging.info("Wrote %d GO term rows to %s", written_terms, terms_dest)
 
 

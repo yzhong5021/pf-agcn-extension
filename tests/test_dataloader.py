@@ -144,13 +144,15 @@ def test_parse_ground_truth_table_with_header(tmp_path: Path) -> None:
     terms_path.write_text(
         "EntryID\tterm\taspect\n"
         "P1\tGO:0001\tc\n"
-        "P2\tGO:0002\tF\n"
-        "P3\tGO:0003\tP;\n",
+        "P2\tGO:0002\tBPO\n"
+        "P3\tGO:0003\tmf\n"
+        "P4\tGO:0004\tCCO\n"
+        "P5\tGO:0005\tunknown\n",
         encoding="utf-8",
     )
     df = parse_ground_truth_table(terms_path)
     assert set(df.columns) == {"entry_id", "term", "aspect"}
-    assert set(df["entry_id"]) == {"P1", "P2", "P3"}
+    assert set(df["entry_id"]) == {"P1", "P2", "P3", "P4"}
     assert set(df["aspect"]) == {"C", "F", "P"}
 
 

@@ -21,6 +21,22 @@ from torch.utils.data import DataLoader, Dataset
 
 log = None
 _PROTEIN_PRIOR_CACHE: Dict[Path, torch.Tensor] = {}
+_ASPECT_ALIASES = {
+    "C": "C",
+    "CC": "C",
+    "CCO": "C",
+    "CELLULARCOMPONENT": "C",
+    "F": "F",
+    "MF": "F",
+    "MFO": "F",
+    "MOLECULARFUNCTION": "F",
+    "M": "F",
+    "P": "P",
+    "BP": "P",
+    "BPO": "P",
+    "BIOLOGICALPROCESS": "P",
+    "B": "P",
+}
 
 
 def _ensure_logger() -> Any:
@@ -68,9 +84,9 @@ def parse_ground_truth_table(path: Path) -> pd.DataFrame:
     # Clean values
     df["entry_id"] = df["entry_id"].astype(str).str.strip()
     df["term"] = df["term"].astype(str).str.strip()
-    df["aspect"] = (
-        df["aspect"].astype(str).str.strip().str.replace(r"[^A-Za-z]", "", regex=True).str.upper()
-    )
+    cleaned = df["aspect"].astype(str).str.strip().str.replace(r"[^A-Za-z]", "", regex=True).str.upper()
+    mapped = cleaned.map(_ASPECT_ALIASES).fillna(cleaned)
+    df["aspect"] = mapped
     df = df[df["aspect"].isin(["C", "F", "P"])].reset_index(drop=True)
     _ensure_logger().info("Loaded %d ground-truth rows from %s", len(df), path)
     return df
