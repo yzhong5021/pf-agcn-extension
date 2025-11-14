@@ -4,14 +4,17 @@
 dataset_root: ${oc.env:KAGGLE_DATASET_ROOT,/kaggle/input/pf-agcn}
 
 sources:
-  seqs_train_path: ${.dataset_root}/train/train_sequences.fasta
-  terms_train_path: ${.dataset_root}/train/train_terms.tsv
-  seqs_val_path: ${.dataset_root}/val/val_sequences.fasta
-  terms_val_path: ${.dataset_root}/val/val_terms.tsv
-  seqs_test_path: ${.dataset_root}/test/test_sequences.fasta
-  terms_test_path: ${.dataset_root}/test/test_terms.tsv
+  seqs_path: ${.dataset_root}/train/train_sequences.fasta
+  terms_path: ${.dataset_root}/train/train_terms.tsv
   ia_path: ${.dataset_root}/ontology/ia.txt
   go_path: ${.dataset_root}/ontology/go-basic.obo
+
+split:
+  seed: 1337
+  ratios:
+    train: 0.8
+    val: 0.1
+    test: 0.1
 
 train_csv: ${.dataset_root}/splits/train.csv
 val_csv:   ${.dataset_root}/splits/val.csv

@@ -17,6 +17,7 @@ from src.modules.dataloader import (
     load_information_accretion,
     load_npz_tensor,
     parse_fasta_sequences,
+    parse_ground_truth_table,
 )
 
 
@@ -136,6 +137,21 @@ def test_parse_fasta_sequences_and_information_accretion(tmp_path: Path) -> None
     ia_path.write_text("GO:1 0.5\nGO:2 1.0\n", encoding="utf-8")
     ia_df = load_information_accretion(ia_path)
     assert list(ia_df["ia"]) == [0.5, 1.0]
+
+
+def test_parse_ground_truth_table_with_header(tmp_path: Path) -> None:
+    terms_path = tmp_path / "terms.tsv"
+    terms_path.write_text(
+        "EntryID\tterm\taspect\n"
+        "P1\tGO:0001\tc\n"
+        "P2\tGO:0002\tF\n"
+        "P3\tGO:0003\tP;\n",
+        encoding="utf-8",
+    )
+    df = parse_ground_truth_table(terms_path)
+    assert set(df.columns) == {"entry_id", "term", "aspect"}
+    assert set(df["entry_id"]) == {"P1", "P2", "P3"}
+    assert set(df["aspect"]) == {"C", "F", "P"}
 
 
 def test_build_sequence_dataloader_and_load_ia_weights(tmp_path: Path) -> None:

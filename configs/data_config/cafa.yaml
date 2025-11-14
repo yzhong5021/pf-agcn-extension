@@ -1,13 +1,16 @@
 # paths and parameters for cafa data
 sources:
-  seqs_train_path: data/raw/train_sequences.fasta
-  terms_train_path: data/raw/train_terms.tsv
-  seqs_val_path: data/raw/val_sequences.fasta
-  terms_val_path: data/raw/val_terms.tsv
-  seqs_test_path: data/raw/test_sequences.fasta
-  terms_test_path: data/raw/test_terms.tsv
+  seqs_path: data/raw/train_sequences.fasta
+  terms_path: data/raw/train_terms.tsv
   ia_path: data/raw/ia.txt
   go_path: data/raw/go-basic.obo
+
+split:
+  seed: 1337
+  ratios:
+    train: 0.8
+    val: 0.1
+    test: 0.1
 
 train_csv: data/splits/train.csv
 val_csv:   data/splits/val.csv

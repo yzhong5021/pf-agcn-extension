@@ -130,21 +130,91 @@ def _ensure_cached_embedding(
     return cache_path, int(length), int(dim)
 
 
-def _load_split_ids(split_path: Optional[str]) -> Optional[Sequence[str]]:
-    if not split_path:
-        return None
-    path = Path(split_path)
-    if not path.exists():
-        return None
-    df = pd.read_csv(path)
-    if df.empty:
-        return None
-    if "entry_id" in df.columns:
-        series = df["entry_id"]
-    else:
-        series = df.iloc[:, 0]
-    values = [str(item) for item in series.dropna().tolist()]
-    return values or None
+def _resolve_split_paths(data_cfg: Mapping[str, Any]) -> Dict[str, Path]:
+    defaults_root = (PROJECT_ROOT / "data" / "splits").resolve()
+    defaults_root.mkdir(parents=True, exist_ok=True)
+    resolved: Dict[str, Path] = {}
+    for split in ("train", "val", "test"):
+        candidate = data_cfg.get(f"{split}_csv")
+        if candidate:
+            path = Path(candidate).expanduser()
+            if not path.is_absolute():
+                path = (PROJECT_ROOT / path).resolve()
+        else:
+            path = (defaults_root / f"{split}.csv").resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        resolved[split] = path
+    return resolved
+
+
+def _generate_split_assignments(
+    entry_ids: Sequence[str],
+    data_cfg: Mapping[str, Any],
+) -> Dict[str, Sequence[str]]:
+    unique_ids = sorted({str(e).strip() for e in entry_ids if str(e).strip()})
+    if not unique_ids:
+        raise ValueError("No entry IDs available for splitting.")
+
+    split_cfg = data_cfg.get("split", {})
+    ratios_cfg = split_cfg.get(
+        "ratios",
+        {
+            "train": 0.8,
+            "val": 0.1,
+            "test": 0.1,
+        },
+    )
+    ratios = {
+        "train": float(ratios_cfg.get("train", 0.0)),
+        "val": float(ratios_cfg.get("val", 0.0)),
+        "test": float(ratios_cfg.get("test", 0.0)),
+    }
+    if ratios["train"] <= 0:
+        raise ValueError("split.ratios.train must be greater than zero.")
+    weights = np.array([ratios["train"], ratios["val"], ratios["test"]], dtype=float)
+    total_weight = float(weights.sum())
+    if total_weight <= 0:
+        raise ValueError("Split ratios must sum to a positive value.")
+    weights = weights / total_weight
+
+    rng = np.random.default_rng(int(split_cfg.get("seed", 1337)))
+    permuted = np.array(unique_ids, dtype=object)
+    rng.shuffle(permuted)
+
+    counts = np.floor(weights * len(permuted)).astype(int)
+    remainder = len(permuted) - int(counts.sum())
+    order = np.argsort(-weights)
+    idx = 0
+    while remainder > 0 and len(order) > 0:
+        target = order[idx % len(order)]
+        counts[target] += 1
+        remainder -= 1
+        idx += 1
+
+    if len(permuted) > 0 and counts[0] == 0:
+        donor_candidates = [i for i in order if i != 0 and counts[i] > 0]
+        if donor_candidates:
+            donor = donor_candidates[0]
+            counts[0] += 1
+            counts[donor] -= 1
+        else:
+            counts[0] = len(permuted)
+            counts[1:] = 0
+
+    splits: Dict[str, Sequence[str]] = {"train": [], "val": [], "test": []}
+    start = 0
+    split_order = ["train", "val", "test"]
+    for idx, split in enumerate(split_order):
+        end = start + int(counts[idx])
+        splits[split] = permuted[start:end].tolist()
+        start = end
+
+    csv_paths = _resolve_split_paths(data_cfg)
+    for split, ids in splits.items():
+        df = pd.DataFrame({"entry_id": ids})
+        df.to_csv(csv_paths[split], index=False)
+
+    return splits
 
 
 def _resolve_obo_path(go_path: Optional[Path], prior_cfg: Mapping[str, Any]) -> Path:
@@ -206,32 +276,16 @@ def prepare_manifests(
     if blast_exec:
         blast_kwargs["blastp_exec"] = str(blast_exec)
 
-    seqs_train_path = _coerce_path(sources.get("seqs_train_path"))
-    terms_train_path = _coerce_path(sources.get("terms_train_path"))
-    seqs_val_path = _coerce_path(sources.get("seqs_val_path"))
-    terms_val_path = _coerce_path(sources.get("terms_val_path"))
-    seqs_test_path = _coerce_path(sources.get("seqs_test_path"))
-    terms_test_path = _coerce_path(sources.get("terms_test_path"))
+    seqs_path = _coerce_path(sources.get("seqs_path") or sources.get("seqs_train_path"))
+    terms_path = _coerce_path(sources.get("terms_path") or sources.get("terms_train_path"))
 
-    if seqs_train_path is None or terms_train_path is None:
-        raise ValueError("sources must include training sequence and term paths")
-    if not seqs_train_path.exists() or not terms_train_path.exists():
+    if seqs_path is None or terms_path is None:
+        raise ValueError("sources must include sequence and term paths")
+    if not seqs_path.exists() or not terms_path.exists():
         raise FileNotFoundError("Training sequence or term file missing")
 
-    seq_tables = [parse_fasta_sequences(seqs_train_path)]
-    term_tables = [parse_ground_truth_table(terms_train_path)]
-
-    for extra_path in (seqs_val_path, seqs_test_path):
-        if extra_path is not None:
-            if not extra_path.exists():
-                raise FileNotFoundError(f"Sequence file not found: {extra_path}")
-            seq_tables.append(parse_fasta_sequences(extra_path))
-
-    for extra_path in (terms_val_path, terms_test_path):
-        if extra_path is not None:
-            if not extra_path.exists():
-                raise FileNotFoundError(f"Term file not found: {extra_path}")
-            term_tables.append(parse_ground_truth_table(extra_path))
+    seq_tables = [parse_fasta_sequences(seqs_path)]
+    term_tables = [parse_ground_truth_table(terms_path)]
 
     sequences = (
         pd.concat(seq_tables, ignore_index=True)
@@ -248,6 +302,11 @@ def prepare_manifests(
     vocab = sorted(term_table["term"].unique())
     label_map = dataframe_to_multi_hot(term_table, vocab)
     term_to_index = {term: idx for idx, term in enumerate(vocab)}
+
+    split_assignments = _generate_split_assignments(
+        sequences["entry_id"].astype(str).tolist(),
+        data_cfg,
+    )
 
     prior_cfg = data_cfg.get("go_prior", {})
     top_k = prior_cfg.get("top_k", {})
@@ -322,12 +381,6 @@ def prepare_manifests(
             embedding_width,
         )
 
-    split_ids = {
-        "train": _load_split_ids(data_cfg.get("train_csv")),
-        "val": _load_split_ids(data_cfg.get("val_csv")),
-        "test": _load_split_ids(data_cfg.get("test_csv")),
-    }
-
     meta_template = {
         "feature_dim": embedding_width,
         "max_length": max_length,
@@ -338,11 +391,11 @@ def prepare_manifests(
     }
 
     bundle_paths: Dict[str, Path] = {}
-    for split, ids in split_ids.items():
+    for split, ids in split_assignments.items():
         split_dir = output_root / split
         split_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = split_dir / f"{aspect.lower()}_manifest.json"
-        selected_ids = ids or list(record_templates.keys())
+        selected_ids = ids if ids is not None else list(record_templates.keys())
         rel_go_prior = os.path.relpath(prior_path, split_dir).replace(os.sep, "/")
         records: list[Dict[str, Any]] = []
         manifest_ids: list[str] = []

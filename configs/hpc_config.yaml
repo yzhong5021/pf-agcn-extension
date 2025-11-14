@@ -21,12 +21,8 @@ training:
 
 data_config:
   sources:
-    seqs_train_path: ${system.paths.data_root}/raw/train_sequences.fasta
-    terms_train_path: ${system.paths.data_root}/raw/train_terms.tsv
-    seqs_val_path: ${system.paths.data_root}/raw/val_sequences.fasta
-    terms_val_path: ${system.paths.data_root}/raw/val_terms.tsv
-    seqs_test_path: ${system.paths.data_root}/raw/test_sequences.fasta
-    terms_test_path: ${system.paths.data_root}/raw/test_terms.tsv
+    seqs_path: ${system.paths.data_root}/raw/train_sequences.fasta
+    terms_path: ${system.paths.data_root}/raw/train_terms.tsv
     ia_path: ${system.paths.data_root}/raw/ia.txt
     go_path: ${system.paths.data_root}/ontology/go-basic.obo
   train_manifest: ${system.paths.cache_dir}/manifests/train_manifest.json
@@ -37,7 +33,9 @@ data_config:
   pin_memory: true
 
 evaluation:
-  metric: fmax
+  metric: 
+  - fmax
+  - 
   val_interval: 1
   threshold_grid: [0.1, 0.3, 0.5, 0.7]
 

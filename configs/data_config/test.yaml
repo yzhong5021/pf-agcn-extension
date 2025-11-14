@@ -1,13 +1,16 @@
 # paths and parameters for cafa data
 sources:
-  seqs_train_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\toy_train.fasta
-  terms_train_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\terms_train_toy.tsv
-  seqs_val_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\toy_val.fasta
-  terms_val_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\terms_val_toy.tsv
-  seqs_test_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\toy_test.fasta
-  terms_test_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\terms_test_toy.tsv  # optional override
+  seqs_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\toy_train.fasta
+  terms_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\terms_train_toy.tsv
   ia_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\ia.txt  # optional override
   go_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\go-basic.obo  # optional override
+
+split:
+  seed: 1337
+  ratios:
+    train: 0.8
+    val: 0.1
+    test: 0.1
 
 train_csv: data/splits/train.csv
 val_csv:   data/splits/val.csv
