@@ -37,18 +37,41 @@ def _ensure_logger() -> Any:
 def parse_ground_truth_table(path: Path) -> pd.DataFrame:
     """Load CAFA ground-truth annotations into a dataframe.
 
-    The file is expected to contain three columns without headers: EntryID,
-    term (GO identifier), and aspect. Each row corresponds to a single
-    protein-term assignment. The returned dataframe exposes canonical column
-    names to simplify downstream merges.
+    Expected format: header row with columns EntryID, term, aspect.
+    Columns may be separated by tabs or whitespace. Returns a dataframe
+    with canonical columns: entry_id, term, aspect.
     """
 
     df = pd.read_csv(
         path,
-        sep="\t",
-        names=["entry_id", "term", "aspect"],
-        dtype={"entry_id": str, "term": str, "aspect": str},
+        sep=r"\s+",
+        engine="python",
+        header=0,
+        dtype=str,
     )
+    # Map header variants to canonical names
+    rename_map: Dict[str, str] = {}
+    for col in list(df.columns):
+        key = str(col).strip().lower()
+        if key == "entryid":
+            rename_map[col] = "entry_id"
+        elif key == "term":
+            rename_map[col] = "term"
+        elif key == "aspect":
+            rename_map[col] = "aspect"
+    if rename_map:
+        df = df.rename(columns=rename_map)
+    req = {"entry_id", "term", "aspect"}
+    if not req.issubset(df.columns):
+        missing = req - set(df.columns)
+        raise ValueError(f"Ground-truth file {path} missing columns: {sorted(missing)}")
+    # Clean values
+    df["entry_id"] = df["entry_id"].astype(str).str.strip()
+    df["term"] = df["term"].astype(str).str.strip()
+    df["aspect"] = (
+        df["aspect"].astype(str).str.strip().str.replace(r"[^A-Za-z]", "", regex=True).str.upper()
+    )
+    df = df[df["aspect"].isin(["C", "F", "P"])].reset_index(drop=True)
     _ensure_logger().info("Loaded %d ground-truth rows from %s", len(df), path)
     return df
 
