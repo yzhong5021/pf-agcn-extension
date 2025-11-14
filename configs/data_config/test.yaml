@@ -1,9 +1,11 @@
 # paths and parameters for cafa data
+dataset_root: ${hydra:runtime.cwd}/data/raw
+
 sources:
-  seqs_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\toy_train.fasta
-  terms_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\terms_train_toy.tsv
-  ia_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\ia.txt  # optional override
-  go_path: C:\Users\yoche\OneDrive - The University of Texas at Austin\Documents\pf_agcn\data\raw\go-basic.obo  # optional override
+  seqs_path: ${.dataset_root}/toy_train.fasta
+  terms_path: ${.dataset_root}/terms_train_toy.tsv
+  ia_path: ${.dataset_root}/ia.txt  # optional override
+  go_path: ${.dataset_root}/go-basic.obo  # optional override
 
 split:
   seed: 1337
@@ -19,7 +21,7 @@ embeddings_npz: ${system.cache_dir}/esm1b_cafa.npz
 go_prior_npz:   ${system.cache_dir}/go_prior_cafa.npz
 
 go_prior:
-  obo_path: ${hydra:runtime.cwd}/data/ontology/go-basic.obo
+  obo_path: ${..sources.go_path}
   train_split_csv: ${..train_csv}
   top_k:
     MF: 100

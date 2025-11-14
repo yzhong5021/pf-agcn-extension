@@ -1,0 +1,38 @@
+# configs/data_config/hpc_smoke.yaml
+# Small CAFA subset paths for HPC smoke testing.
+
+dataset_root: /orcd/home/002/lerchen/code/cafa6
+train_dir: ${.dataset_root}/Train
+smoke_dir: ${.dataset_root}/smoke
+
+sources:
+  seqs_path: ${.smoke_dir}/train_sequences_smoke.fasta
+  terms_path: ${.smoke_dir}/train_terms_smoke.tsv
+  ia_path: ${.dataset_root}/IA.tsv
+  go_path: ${.train_dir}/go-basic.obo
+
+split:
+  seed: 1337
+  ratios:
+    train: 0.8
+    val: 0.1
+    test: 0.1
+
+train_csv: null
+val_csv: null
+test_csv: null
+embeddings_npz: null
+go_prior_npz: null
+
+go_prior:
+  obo_path: ${..sources.go_path}
+  train_split_csv: null
+  top_k:
+    MF: 128
+    BP: 256
+    CC: 128
+
+batch_size: 8
+train_manifest: null
+val_manifest: null
+test_manifest: null

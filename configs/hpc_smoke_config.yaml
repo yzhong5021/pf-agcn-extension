@@ -1,0 +1,41 @@
+# HPC smoke-test Hydra config preset.
+
+defaults:
+  - data_config: hpc_smoke
+  - task: pf_agcn
+  - model: pf_agcn_full
+  - train@_here_: train_hpc_smoke
+  - hpo: optuna_search
+  - system: hpc_supercloud
+  - _self_
+
+experiment_name: "pfagcn_supercloud_smoke"
+run_name: "pf-agcn-hpc-smoke"
+resume: false
+
+training:
+  devices: 1
+  accelerator: gpu
+  precision: 16
+  log_interval: 10
+  num_nodes: 1
+
+data_config:
+  batch_size: 8
+  num_workers: 4
+  pin_memory: true
+
+evaluation:
+  metric:
+    - fmax
+  val_interval: 1
+  threshold_grid: [0.3, 0.5]
+
+hydra:
+  run:
+    dir: ${system.paths.results_root}/smoke_runs/${now:%Y%m%d-%H%M%S}
+  job:
+    chdir: true
+  sweep:
+    dir: ${system.paths.results_root}/smoke_sweeps/${now:%Y%m%d}
+    subdir: ${now:%H%M%S}

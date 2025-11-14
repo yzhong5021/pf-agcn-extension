@@ -23,7 +23,7 @@ embeddings_npz: ${system.cache_dir}/esm1b_pfagcn_kaggle.npz
 go_prior_npz:   ${system.cache_dir}/go_prior_pfagcn_kaggle.npz
 
 go_prior:
-  obo_path: ${hydra:runtime.cwd}/data/ontology/go-basic.obo
+  obo_path: ${..sources.go_path}
   train_split_csv: ${.train_csv}
   top_k:
     MF: 768
