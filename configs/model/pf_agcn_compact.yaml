@@ -36,6 +36,13 @@ seq_gating:
 seq_final:
   metric_dim: 64
   graph_dim: ${..seq_gating.shared_dim}
+  function_dim: ${..seq_gating.shared_dim}
+  protein_dim: ${..seq_gating.shared_dim}
+graph:
+  structure: decoupled
+  protein_stacks: 2
+  function_stacks: 2
+  alternating_depth: 4
 adaptive_protein:
   feature_dim: ${..seq_gating.shared_dim}
   attention_dim: 128
@@ -53,6 +60,7 @@ adaptive_function:
 head:
   feature_dim: ${..seq_gating.shared_dim}
   dropout: 0.1
+  attn_hidden: ${..seq_gating.attn_hidden}
 loss:
   name: bce_with_logits
   pos_weight: null

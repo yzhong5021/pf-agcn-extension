@@ -11,9 +11,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 import hydra
-from hydra import compose, initialize_config_dir
+from hydra import compose, initialize_config_dir, version as hydra_version
 from hydra.core.global_hydra import GlobalHydra
-from omegaconf import DictConfig, OmegaConf
+from hydra.core.hydra_config import HydraConfig
+from hydra.conf import ConfigSourceInfo
+from hydra.types import RunMode
+from omegaconf import DictConfig, MISSING, OmegaConf, open_dict, read_write
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -23,7 +26,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from preprocessing import ManifestBundle, prepare_manifests
-from train.training import main as train_main
+from train.training import run_training
 from utils.system_runtime import apply_system_env
 
 log = logging.getLogger(__name__)
@@ -108,18 +111,6 @@ def _resolve_config_dir(config_path: str | Path) -> Path:
     return config_dir
 
 
-def _config_path_for_hydra(config_path: str | Path) -> str:
-    """Hydra expects config_path relative to this script; convert and normalise separators."""
-
-    config_dir = _resolve_config_dir(config_path)
-    script_dir = Path(__file__).resolve().parent
-    try:
-        relative = os.path.relpath(config_dir, script_dir)
-    except ValueError:
-        relative = config_dir.as_posix()
-    return relative.replace(chr(92), "/")
-
-
 def _compose_config(
     config_dir: str | Path, config_name: str, overrides: list[str] | None = None
 ) -> DictConfig:
@@ -132,6 +123,56 @@ def _compose_config(
     return cfg
 
 
+def _finalize_hydra_runtime(cfg: DictConfig, config_path: str | Path, config_name: str) -> None:
+    """Populate hydra.runtime fields so hydra.* interpolations resolve when composed manually."""
+
+    hydra_cfg = cfg.hydra
+    runtime = hydra_cfg.runtime
+    with read_write(hydra_cfg):
+        with open_dict(hydra_cfg):
+            hydra_cfg.mode = hydra_cfg.mode or RunMode.RUN
+            with read_write(runtime):
+                with open_dict(runtime):
+                    runtime.cwd = runtime.cwd or os.getcwd()
+                    runtime.version = runtime.version or hydra.__version__
+                    runtime.version_base = runtime.version_base or hydra_version.getbase()
+                    if not runtime.config_sources or runtime.config_sources in (None, "???", MISSING):
+                        config_dir = _resolve_config_dir(config_path)
+                        runtime.config_sources = [
+                            ConfigSourceInfo(path=str(config_dir), schema="file", provider="main")
+                        ]
+                    if runtime.choices in (None, "???", MISSING):
+                        runtime.choices = {}
+            with read_write(hydra_cfg.job):
+                with open_dict(hydra_cfg.job):
+                    job_name = OmegaConf.select(hydra_cfg, "job.name", default=None)
+                    if not job_name or job_name in (None, "???", MISSING):
+                        hydra_cfg.job.name = config_name
+                    job_id = OmegaConf.select(hydra_cfg, "job.id", default=None)
+                    if not job_id or job_id in (None, "???", MISSING):
+                        hydra_cfg.job.id = "manual"
+                    job_num = OmegaConf.select(hydra_cfg, "job.num", default=None)
+                    if job_num in (None, "???", MISSING):
+                        hydra_cfg.job.num = 0
+                    job_cfg_name = OmegaConf.select(hydra_cfg, "job.config_name", default=None)
+                    if not job_cfg_name or job_cfg_name in (None, "???", MISSING):
+                        hydra_cfg.job.config_name = config_name
+
+    HydraConfig.instance().set_config(cfg)
+
+    run_dir = OmegaConf.select(cfg, "hydra.run.dir")
+    if not run_dir:
+        run_dir = os.path.join(runtime.cwd, "outputs", "manual")
+    run_dir = os.path.abspath(os.path.expanduser(str(run_dir)))
+    with read_write(runtime):
+        with open_dict(runtime):
+            current_output_dir = OmegaConf.select(cfg, "hydra.runtime.output_dir", default=None)
+            if not current_output_dir or current_output_dir in (None, "???", MISSING):
+                runtime.output_dir = run_dir
+
+    HydraConfig.instance().set_config(cfg)
+
+
 def _load_manifest_meta(manifest_path: Path) -> Dict[str, Any]:
     with manifest_path.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
@@ -141,8 +182,6 @@ def _load_manifest_meta(manifest_path: Path) -> Dict[str, Any]:
 def _ensure_manifests(cfg: DictConfig, aspect: str) -> List[str]:
     overrides: List[str] = []
     aspect_upper = aspect.upper()
-    cfg.aspect = aspect_upper
-    overrides.append(f"aspect={aspect_upper}")
 
     data_cfg = OmegaConf.to_container(cfg.data_config, resolve=True)
     seq_cfg = OmegaConf.to_container(cfg.model.seq_embeddings, resolve=True)
@@ -200,24 +239,16 @@ def _ensure_manifests(cfg: DictConfig, aspect: str) -> List[str]:
     return overrides
 
 
-def run_train(config_path: str, config_name: str, aspect: str) -> None:
+def run_train_command(config_path: str, config_name: str, aspect: str) -> None:
     aspect_upper = aspect.upper()
-    hydra_config_path = _config_path_for_hydra(config_path)
-
-    @hydra.main(version_base=None, config_path=hydra_config_path, config_name=config_name)
-    def _train(cfg: DictConfig) -> None:
-        apply_system_env(cfg)
-        manifest_overrides = _ensure_manifests(cfg, aspect_upper)
-        if manifest_overrides:
-            cfg = OmegaConf.merge(cfg, OmegaConf.from_cli(manifest_overrides))
-        train_main(cfg)
-
-    original_argv = sys.argv[:]
-    try:
-        sys.argv = [original_argv[0], f"aspect={aspect_upper}"]
-        _train()
-    finally:
-        sys.argv = original_argv
+    overrides = [f"+aspect={aspect_upper}"]
+    cfg = _compose_config(config_path, config_name, overrides)
+    _finalize_hydra_runtime(cfg, config_path, config_name)
+    apply_system_env(cfg)
+    manifest_overrides = _ensure_manifests(cfg, aspect_upper)
+    if manifest_overrides:
+        cfg = OmegaConf.merge(cfg, OmegaConf.from_cli(manifest_overrides))
+    run_training(cfg)
 
 
 def _resolve_manifest_for_predict(args: argparse.Namespace) -> str:
@@ -304,7 +335,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     args = parse_args(argv or sys.argv[1:])
     if args.command == "train":
-        run_train(args.config_path, args.config_name, args.aspect)
+        run_train_command(args.config_path, args.config_name, args.aspect)
     elif args.command == "predict":
         run_predict(args)
 

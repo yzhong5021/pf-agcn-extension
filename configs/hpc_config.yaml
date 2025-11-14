@@ -5,7 +5,6 @@ defaults:
   - task: pf_agcn
   - model: pf_agcn_compact
   - train@_here_: train_default
-  - eval: cafa
   - hpo: optuna_search
   - system: hpc_supercloud
   - _self_

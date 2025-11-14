@@ -1,0 +1,31 @@
+# configs/local_smoke.yaml
+# Hydra preset for single-host smoke tests on the toy CAFA subset.
+
+defaults:
+  - data_config: test
+  - task: pf_agcn
+  - model: pf_agcn_compact
+  - train@_here_: train_smoke
+  - hpo: optuna_search
+  - system: local_low
+  - _self_
+
+experiment_name: "pfagcn_local_smoke"
+run_name: "pf-agcn-smoke"
+resume: false
+
+data_config:
+  train_manifest: 
+  val_manifest: 
+  test_manifest: 
+  batch_size: 2
+  num_workers: 0
+  pin_memory: false
+
+training:
+  fast_dev_run: false
+
+evaluation:
+  metric:
+    - fmax
+  threshold_grid: [0.5]

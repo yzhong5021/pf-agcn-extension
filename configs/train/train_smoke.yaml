@@ -1,0 +1,43 @@
+# @package _global_
+# configs/train/train_smoke.yaml
+# Ultra-light training schedule for local smoke tests on toy data.
+
+training:
+  seed: 1337
+  max_epochs: 1
+  gradient_clip: 0.0
+  precision: 32
+  accumulate_batches: 1
+  log_interval: 1
+  devices: 1
+  accelerator: cpu
+  strategy: null
+  deterministic: true
+  enable_progress_bar: false
+  limit_train_batches: 2
+  limit_val_batches: 1
+  fast_dev_run: false
+
+optimizer:
+  name: adamw
+  lr: 0.001
+  weight_decay: 0.0
+  betas: [0.9, 0.999]
+
+scheduler:
+  name: none
+
+data:
+  train_manifest: null
+  val_manifest: null
+  test_manifest: null
+  batch_size: 2
+  num_workers: 0
+  pin_memory: false
+  drop_last: false
+
+evaluation:
+  metric:
+    - fmax
+  val_interval: 1
+  threshold_grid: [0.5]

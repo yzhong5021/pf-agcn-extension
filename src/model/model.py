@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
+from types import SimpleNamespace
 
 import logging
 
@@ -25,7 +26,7 @@ from src.modules.adaptive_function import AdaptiveFunctionBlock
 from src.modules.adaptive_protein import AdaptiveProteinBlock
 from src.modules.dccn import DCCN_1D
 from src.modules.head import ClassificationHead
-from src.modules.pooling import AdaptivePooling  # TEMP[2025-10-19 Codex]
+from src.modules.pooling import AdaptivePooling
 from src.modules.seq_final import SeqFinal
 from src.modules.seq_gating import SeqGating
 
@@ -86,46 +87,120 @@ class PFAGCN(nn.Module):
             dropout=model_cfg.seq_gating.dropout,
         )
 
+        seq_final_cfg = model_cfg.seq_final
+        graph_cfg = getattr(model_cfg, "graph", None) or SimpleNamespace()
+        self.graph_structure = str(getattr(graph_cfg, "structure", "decoupled")).lower()
+        if self.graph_structure not in {"decoupled", "alternating"}:
+            raise ValueError("graph.structure must be either 'decoupled' or 'alternating'.")
+
+        self.protein_stack_depth = int(getattr(graph_cfg, "protein_stacks", 2))
+        self.function_stack_depth = int(getattr(graph_cfg, "function_stacks", 2))
+        self.alternating_depth = int(getattr(graph_cfg, "alternating_depth", 4))
+        if self.graph_structure == "alternating" and self.alternating_depth <= 0:
+            raise ValueError("alternating graph structure requires alternating_depth > 0.")
+
+        self.function_feature_dim = getattr(seq_final_cfg, "function_dim", graph_dim)
+        self.protein_feature_dim = getattr(seq_final_cfg, "protein_dim", graph_dim)
+
         self.seq_final = SeqFinal(
-            in_dim= shared_dim,
+            in_dim=shared_dim,
             N_C=self.num_functions,
-            proj=model_cfg.seq_final.metric_dim,
+            proj=seq_final_cfg.metric_dim,
             out_ch=graph_dim,
+            decoupled=self.graph_structure == "decoupled",
+            function_dim=self.function_feature_dim,
+            protein_dim=self.protein_feature_dim,
         )
 
-        # TEMP[2025-10-19 Codex]: attention pooling to collapse pairwise affinities.
-        self.protein_pool = AdaptivePooling(
-            embed_dim=graph_dim,
-            attn_hidden=model_cfg.seq_gating.attn_hidden,
-            dropout=model_cfg.seq_gating.dropout,
-        )
-        self.function_pool = AdaptivePooling(
-            embed_dim=graph_dim,
-            attn_hidden=model_cfg.seq_gating.attn_hidden,
-            dropout=model_cfg.seq_gating.dropout,
-        )
+        head_cfg = model_cfg.head
+        head_dim = getattr(head_cfg, "feature_dim", graph_dim)
+        head_attn_hidden = getattr(head_cfg, "attn_hidden", model_cfg.seq_gating.attn_hidden)
 
-        self.protein_block = AdaptiveProteinBlock(
-            d_in=graph_dim,
-            d_attn=model_cfg.adaptive_protein.attention_dim,
-            steps=model_cfg.adaptive_protein.steps,
-            p=model_cfg.adaptive_protein.top_p_mass,
-            tau=model_cfg.adaptive_protein.temperature,
-            dropout=model_cfg.adaptive_protein.dropout,
-        )
-        self.function_block = AdaptiveFunctionBlock(
-            d_in=graph_dim,
-            d_attn=model_cfg.adaptive_function.attention_dim,
-            steps=model_cfg.adaptive_function.steps,
-            p=model_cfg.adaptive_function.top_p_mass,
-            tau=model_cfg.adaptive_function.temperature,
-            dropout=model_cfg.adaptive_function.dropout,
-        )
-        self.head = ClassificationHead(
-            N_C=self.num_functions,
-            d_in=graph_dim,
-            dropout=model_cfg.head.dropout,
-        )
+        self.head: Optional[ClassificationHead]
+        self.alternating_classifier: Optional[nn.Linear]
+        self.protein_summary_pool: Optional[AdaptivePooling]
+        self.function_summary_pool: Optional[AdaptivePooling]
+
+        if self.graph_structure == "decoupled":
+            self.function_blocks = nn.ModuleList(
+                [
+                    AdaptiveFunctionBlock(
+                        d_in=self.function_feature_dim,
+                        d_attn=model_cfg.adaptive_function.attention_dim,
+                        steps=model_cfg.adaptive_function.steps,
+                        p=model_cfg.adaptive_function.top_p_mass,
+                        tau=model_cfg.adaptive_function.temperature,
+                        dropout=model_cfg.adaptive_function.dropout,
+                    )
+                    for _ in range(self.function_stack_depth)
+                ]
+            )
+            self.protein_blocks = nn.ModuleList(
+                [
+                    AdaptiveProteinBlock(
+                        d_in=self.protein_feature_dim,
+                        d_attn=model_cfg.adaptive_protein.attention_dim,
+                        steps=model_cfg.adaptive_protein.steps,
+                        p=model_cfg.adaptive_protein.top_p_mass,
+                        tau=model_cfg.adaptive_protein.temperature,
+                        dropout=model_cfg.adaptive_protein.dropout,
+                    )
+                    for _ in range(self.protein_stack_depth)
+                ]
+            )
+            self.alternating_blocks = nn.ModuleList()
+            self.alternating_classifier = None
+            self.protein_summary_pool = None
+            self.function_summary_pool = None
+            self.head = ClassificationHead(
+                N_C=self.num_functions,
+                d_in=head_dim,
+                protein_input_dim=self.protein_feature_dim,
+                function_input_dim=self.function_feature_dim,
+                dropout=head_cfg.dropout,
+                attn_hidden=head_attn_hidden,
+            )
+        else:
+            self.function_blocks = nn.ModuleList()
+            self.protein_blocks = nn.ModuleList()
+            self.head = None
+            self.alternating_blocks = nn.ModuleList(
+                [
+                    (
+                        AdaptiveFunctionBlock(
+                            d_in=graph_dim,
+                            d_attn=model_cfg.adaptive_function.attention_dim,
+                            steps=model_cfg.adaptive_function.steps,
+                            p=model_cfg.adaptive_function.top_p_mass,
+                            tau=model_cfg.adaptive_function.temperature,
+                            dropout=model_cfg.adaptive_function.dropout,
+                        )
+                        if idx % 2 == 0
+                        else AdaptiveProteinBlock(
+                            d_in=graph_dim,
+                            d_attn=model_cfg.adaptive_protein.attention_dim,
+                            steps=model_cfg.adaptive_protein.steps,
+                            p=model_cfg.adaptive_protein.top_p_mass,
+                            tau=model_cfg.adaptive_protein.temperature,
+                            dropout=model_cfg.adaptive_protein.dropout,
+                        )
+                    )
+                    for idx in range(self.alternating_depth)
+                ]
+            )
+            self.alternating_classifier = nn.Linear(graph_dim, 1)
+            nn.init.xavier_uniform_(self.alternating_classifier.weight)
+            nn.init.zeros_(self.alternating_classifier.bias)
+            self.protein_summary_pool = AdaptivePooling(
+                embed_dim=graph_dim,
+                attn_hidden=head_attn_hidden,
+                dropout=head_cfg.dropout,
+            )
+            self.function_summary_pool = AdaptivePooling(
+                embed_dim=graph_dim,
+                attn_hidden=head_attn_hidden,
+                dropout=head_cfg.dropout,
+            )
 
     def forward(
         self,
@@ -175,37 +250,46 @@ class PFAGCN(nn.Module):
 
         # print("\n\n\nGating_repr", gating_repr.shape)
 
-        protein_init, function_init = self._initial_graph_features(gating_repr)
-        # print("\n\n\nProtein_init (initial)", protein_init.shape)
-        # print("\n\n\nFunction_init (initial)", function_init.shape)
+        if self.graph_structure == "decoupled":
+            function_init, protein_init = self.seq_final(gating_repr, mode="decoupled")
+            protein_prior_matrix = self._resolve_protein_prior(protein_init, protein_prior)
+            function_prior_matrix = self._resolve_function_prior(
+                go_prior, function_init.device, function_init.dtype
+            )
+            protein_features, protein_adj = self._apply_stack(
+                self.protein_blocks, protein_init, protein_prior_matrix
+            )
+            function_features, function_adj = self._apply_stack(
+                self.function_blocks, function_init, function_prior_matrix
+            )
+            logits, protein_embeddings, function_embeddings = self.head(
+                function_features, protein_features
+            )
+        else:
+            shared_features = self.seq_final(gating_repr, mode="alternating")
+            protein_prior_matrix = self._resolve_protein_prior(shared_features, protein_prior)
+            function_prior_matrix = self._resolve_function_prior(
+                go_prior, shared_features.device, shared_features.dtype
+            )
+            shared_features, protein_adj, function_adj = self._run_alternating_blocks(
+                shared_features, protein_prior_matrix, function_prior_matrix
+            )
+            logits = self.alternating_classifier(shared_features).squeeze(-1)
+            protein_embeddings = self.protein_summary_pool(shared_features)
+            function_embeddings = self.function_summary_pool(shared_features.permute(1, 0, 2))
 
-        ### TEMPORARY POOLING - BETTER TO EDIT SEQ_FINAL.
-        ### INSERT POOLING MODULE HERE. SHOULD TURN (N_P|N_C, N_P, C) INTO (N_P|N_C, C) DEPENDING ON FUNCTION OR PROTEIN
-        # TEMP: reuse attention pooling to obtain graph-ready embeddings.
-        # protein_init = self.protein_pool(protein_init)
-        # function_init = self.function_pool(function_init)
-
-        if self.use_protein_prior and protein_prior is None:
-            protein_prior = self._build_protein_prior(protein_init)  # TEMP[2025-10-19 Codex]
-        elif not self.use_protein_prior:
-            protein_prior = None
-
-        # print("\n\n\nProtein prior", protein_prior.shape)
-        protein_embeddings = self._run_protein_block(protein_init, protein_prior)
-        # print("\n\n\nProtein_embeddings", protein_embeddings.shape) 
-
-        # print("\n\n\nGO prior", go_prior.shape)
-        function_embeddings = self._run_function_block(function_init, go_prior)
-        # print("\n\n\nFunction_embeddings", function_embeddings.shape) 
-
-        logits = self.head(function_embeddings, protein_embeddings)
-        # print("\n\n\nLogits", logits.shape) 
-
-        protein_adj, function_adj = self._build_adjacencies(
-            protein_embeddings, function_embeddings
+        protein_adj = self._ensure_adjacency(
+            protein_adj,
+            protein_embeddings.size(0),
+            protein_embeddings.device,
+            protein_embeddings.dtype,
         )
-        # print("\n\n\nProtein_adj", protein_adj.shape) 
-        # print("\n\n\nFunction_adj", function_adj.shape) 
+        function_adj = self._ensure_adjacency(
+            function_adj,
+            self.num_functions,
+            function_embeddings.device,
+            function_embeddings.dtype,
+        )
 
         return Output(
             logits=logits,
@@ -242,49 +326,86 @@ class PFAGCN(nn.Module):
             )
         return mask_bool, lengths_tensor
 
-    def _masked_mean(self, tensor: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        mask = mask.unsqueeze(-1).to(dtype=tensor.dtype)
-        total = (tensor * mask).sum(dim=1)
-        denom = mask.sum(dim=1).clamp_min(1.0)
-        return total / denom
+    def _apply_stack(
+        self,
+        blocks: nn.ModuleList,
+        features: torch.Tensor,
+        prior: Optional[torch.Tensor],
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        adjacency: Optional[torch.Tensor] = None
+        current = features
+        if not blocks:
+            return current, None
 
-    def _initial_graph_features(
-        self, protein_repr: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        for block in blocks:
+            current = block(current, prior=prior)
+            adjacency = getattr(block, "last_attention", None)
+        return current, adjacency
 
-        protein_features = self.seq_final.prot_proj(protein_repr)
-        function_features = self.seq_final.go_proj(protein_repr)
-        return protein_features, function_features
+    def _run_alternating_blocks(
+        self,
+        features: torch.Tensor,
+        protein_prior: Optional[torch.Tensor],
+        function_prior: Optional[torch.Tensor],
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        protein_adj: Optional[torch.Tensor] = None
+        function_adj: Optional[torch.Tensor] = None
+        current = features
 
-    def _run_protein_block(
-        self, protein_init: torch.Tensor, protein_prior: Optional[torch.Tensor]
+        for block in self.alternating_blocks:
+            prior = protein_prior if block.axis == "protein" else function_prior
+            current = block(current, prior=prior)
+            if block.axis == "protein":
+                protein_adj = getattr(block, "last_attention", None)
+            else:
+                function_adj = getattr(block, "last_attention", None)
+
+        return current, protein_adj, function_adj
+
+    def _resolve_protein_prior(
+        self,
+        tensor: torch.Tensor,
+        explicit_prior: Optional[torch.Tensor],
+    ) -> Optional[torch.Tensor]:
+        if not self.use_protein_prior:
+            return None
+
+        nodes = tensor.size(0)
+        if explicit_prior is not None:
+            return self._validate_prior_matrix(
+                explicit_prior, nodes, "protein_prior", tensor.device, tensor.dtype
+            )
+
+        pooled = tensor.mean(dim=1)
+        return self._build_protein_prior_from_summary(pooled)
+
+    def _resolve_function_prior(
+        self,
+        go_prior: Optional[torch.Tensor],
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Optional[torch.Tensor]:
+        if not self.use_go_prior or go_prior is None:
+            return None
+        return self._validate_prior_matrix(
+            go_prior, self.num_functions, "go_prior", device, dtype
+        )
+
+    def _validate_prior_matrix(
+        self,
+        prior: torch.Tensor,
+        size: int,
+        name: str,
+        device: torch.device,
+        dtype: torch.dtype,
     ) -> torch.Tensor:
-        if protein_prior is not None:
-            if protein_prior.ndim != 2:
-                raise ValueError("protein_prior must be 2D (N, N).")
-            if protein_prior.shape[0] != protein_prior.shape[1]:
-                raise ValueError("protein_prior must be square.")
-            if protein_prior.shape[0] != protein_init.shape[0]:
-                raise ValueError("protein_prior size must match batch size.")
-            protein_prior = protein_prior.to(protein_init.device, dtype=protein_init.dtype)
-        return self.protein_block(protein_init, protein_prior)
+        if prior.ndim != 2 or prior.shape[0] != prior.shape[1]:
+            raise ValueError(f"{name} must be a square 2D tensor.")
+        if prior.shape[0] != size:
+            raise ValueError(f"{name} size mismatch: expected {size}, got {prior.shape[0]}.")
+        return prior.to(device=device, dtype=dtype)
 
-    def _run_function_block(
-        self, function_init: torch.Tensor, go_prior: Optional[torch.Tensor]
-    ) -> torch.Tensor:
-        if go_prior is not None:
-            if go_prior.ndim != 2:
-                raise ValueError("go_prior must be 2D (C, C).")
-            if go_prior.shape[0] != go_prior.shape[1]:
-                raise ValueError("go_prior must be square.")
-            if go_prior.shape[0] != self.num_functions:
-                raise ValueError("go_prior must match the number of functions.")
-            go_prior = go_prior.to(function_init.device, dtype=function_init.dtype)
-        return self.function_block(function_init, go_prior)
-
-    def _build_protein_prior(self, pooled: torch.Tensor) -> torch.Tensor:
-        """Construct a symmetric, non-negative protein prior from pooled features."""
-
+    def _build_protein_prior_from_summary(self, pooled: torch.Tensor) -> torch.Tensor:
         if pooled.size(0) == 0:
             return torch.zeros((0, 0), device=pooled.device, dtype=pooled.dtype)
 
@@ -298,13 +419,13 @@ class PFAGCN(nn.Module):
         cosine = torch.matmul(normed, normed.T)
         return torch.clamp(cosine, min=0.0)
 
-
-    def _build_adjacencies(
+    def _ensure_adjacency(
         self,
-        protein_embeddings: torch.Tensor,
-        function_embeddings: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        with torch.no_grad():
-            protein_adj = self.protein_block._adj_from_feats(protein_embeddings)
-            function_adj = self.function_block._adj_from_feats(function_embeddings)
-        return protein_adj, function_adj
+        adj: Optional[torch.Tensor],
+        size: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        if adj is not None:
+            return adj
+        return torch.eye(size, device=device, dtype=dtype)

@@ -6,7 +6,6 @@ defaults:
   - task: pf_agcn
   - model: pf_agcn_compact
   - train@_here_: train_low_compute
-  - eval: test
   - hpo: optuna_search
   - system: local_low
   - _self_

@@ -6,7 +6,6 @@ defaults:
   - task: pf_agcn
   - model: kaggle_pf_agcn
   - train@_here_: kaggle_train
-  - eval: kaggle
   - hpo: optuna_search
   - system: kaggle
   - _self_

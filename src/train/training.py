@@ -50,6 +50,7 @@ def flatten_config(config: Mapping[str, Any], parent: str = "") -> Dict[str, Any
     items: Dict[str, Any] = {}
     for key, value in config.items():
         composite = f"{parent}.{key}" if parent else str(key)
+        composite = composite.replace("@", "_")
         if isinstance(value, Mapping):
             items.update(flatten_config(value, composite))
         elif isinstance(value, (list, tuple)):
@@ -519,9 +520,8 @@ def _precision_arg(cfg: DictConfig) -> Any:
 ###### Hydra main ######
 
 
-@hydra.main(version_base=None, config_path="../../configs", config_name="default_config")
-def main(cfg: DictConfig) -> None:
-    """Hydra application entry point."""
+def run_training(cfg: DictConfig) -> None:
+    """Execute PF-AGCN training with a pre-resolved Hydra config."""
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     apply_system_env(cfg)
@@ -596,6 +596,12 @@ def main(cfg: DictConfig) -> None:
 
     trainer = Trainer(**trainer_kwargs)
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+
+
+@hydra.main(version_base=None, config_path="../../configs", config_name="default_config")
+def main(cfg: DictConfig) -> None:
+    """Hydra entry point when invoking `python -m src.train.training`."""
+    run_training(cfg)
 
 
 if __name__ == "__main__":
