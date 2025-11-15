@@ -1,6 +1,6 @@
 # paths and parameters for cafa data
 dataset_root: /orcd/home/002/lerchen/code/cafa6
-train_dir: ${.dataset_root}/Train
+train_dir: ${.dataset_root}/Train_slice
 
 sources:
   seqs_path: ${..train_dir}/train_sequences.fasta

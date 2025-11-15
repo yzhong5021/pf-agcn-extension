@@ -307,6 +307,44 @@ def _project_targets(
     return [float(values[term_to_index.get(term, -1)]) if term in term_to_index else 0.0 for term in selected_terms]
 
 
+def _build_parent_lookup(adjacency: np.ndarray) -> list[list[int]]:
+    """Precompute parent indices for each GO term given a parent->child adjacency."""
+
+    if adjacency.size == 0:
+        return []
+    num_terms = int(adjacency.shape[1])
+    parents: list[list[int]] = []
+    for child_idx in range(num_terms):
+        parent_indices = np.flatnonzero(adjacency[:, child_idx] > 0).astype(int).tolist()
+        parents.append(parent_indices)
+    return parents
+
+
+def _propagate_ancestor_labels(
+    targets: Sequence[float],
+    parent_lookup: Sequence[Sequence[int]],
+) -> list[float]:
+    """Mark ancestor terms as positive if any descendant is positive."""
+
+    if not targets:
+        return []
+    values = np.asarray(targets, dtype=np.float32)
+    if parent_lookup and len(parent_lookup) != len(values):
+        raise ValueError("parent lookup length must match number of targets")
+
+    positive = list(np.flatnonzero(values > 0.0))
+    visited = set(positive)
+    while positive:
+        child_idx = int(positive.pop())
+        for parent_idx in parent_lookup[child_idx]:
+            if values[parent_idx] < 0.5:
+                values[parent_idx] = 1.0
+            if parent_idx not in visited:
+                positive.append(parent_idx)
+                visited.add(parent_idx)
+    return values.tolist()
+
+
 def prepare_manifests(
     data_cfg: Mapping[str, Any],
     *,
@@ -401,6 +439,7 @@ def prepare_manifests(
     aspect_prior = go_priors[aspect]
     selected_terms = list(aspect_prior.terms)
     num_functions = len(selected_terms)
+    parent_lookup = _build_parent_lookup(aspect_prior.adjacency)
 
     priors_dir = output_root / "priors" / aspect.lower()
     priors_dir.mkdir(parents=True, exist_ok=True)
@@ -435,6 +474,7 @@ def prepare_manifests(
                 f"Inconsistent {backend} embedding dimensionality encountered; check cache integrity."
             )
         targets = _project_targets(entry_id, label_map, term_to_index, selected_terms)
+        targets = _propagate_ancestor_labels(targets, parent_lookup)
         record_templates[entry_id] = {
             "entry_id": entry_id,
             "embedding_path": cache_path,

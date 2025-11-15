@@ -8,9 +8,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import hydra
 from hydra.utils import get_original_cwd
@@ -201,6 +202,7 @@ def compute_cafa_metrics(
     ground_truth = CafaGroundTruth(ids=ids, matrix=targets.astype(bool))
     toi = np.arange(probabilities.shape[1])
     ne = np.full(tau_arr.shape[0], ground_truth.matrix.shape[0])
+    cpu_workers = max(1, int(os.cpu_count() or 1))
 
     metrics_df = cafa_normalize(
         cafa_compute_metrics(
@@ -209,7 +211,7 @@ def compute_cafa_metrics(
             tau_arr,
             toi,
             ic_arr=None,
-            n_cpu=1,
+            n_cpu=cpu_workers,
         ),
         "mock",
         tau_arr,
@@ -243,7 +245,7 @@ def compute_cafa_metrics(
                 tau_arr,
                 toi,
                 ic_arr=ia_weights,
-                n_cpu=1,
+                n_cpu=cpu_workers,
             ),
             "mock",
             tau_arr,
@@ -288,6 +290,51 @@ def compute_cafa_metrics(
     return metrics
 
 
+class _ValidationArrayStore:
+    """Persist validation tensors to disk-backed buffers to cap RAM usage."""
+
+    def __init__(self, num_terms: int) -> None:
+        self.num_terms = int(num_terms)
+        self.samples = 0
+        self._prob_file = tempfile.NamedTemporaryFile(delete=False)
+        self._target_file = tempfile.NamedTemporaryFile(delete=False)
+        self._closed = False
+
+    def append(self, probs: torch.Tensor, targets: torch.Tensor) -> None:
+        probs_cpu = probs.detach().to(device="cpu", dtype=torch.float32)
+        targets_cpu = targets.detach().to(device="cpu", dtype=torch.float32)
+        if probs_cpu.shape[1] != self.num_terms or targets_cpu.shape[1] != self.num_terms:
+            raise ValueError("Validation batches produced inconsistent dimensions")
+        self._prob_file.write(probs_cpu.numpy().tobytes())
+        self._target_file.write(targets_cpu.numpy().tobytes())
+        self.samples += int(probs_cpu.shape[0])
+
+    def materialize(self) -> Tuple[np.ndarray, np.ndarray]:
+        if self.samples == 0:
+            empty = np.zeros((0, self.num_terms), dtype=np.float32)
+            return empty, empty
+        self._close_handles()
+        shape = (self.samples, self.num_terms)
+        probs = np.memmap(self._prob_file.name, dtype=np.float32, mode="r", shape=shape)
+        targets = np.memmap(self._target_file.name, dtype=np.float32, mode="r", shape=shape)
+        return probs, targets
+
+    def cleanup(self) -> None:
+        self._close_handles()
+        for file_obj in (self._prob_file, self._target_file):
+            try:
+                os.unlink(file_obj.name)
+            except FileNotFoundError:
+                continue
+
+    def _close_handles(self) -> None:
+        if self._closed:
+            return
+        self._prob_file.close()
+        self._target_file.close()
+        self._closed = True
+
+
 ####### Lightning Module #######
 
 class PFAGCNLightningModule(LightningModule):
@@ -306,9 +353,8 @@ class PFAGCNLightningModule(LightningModule):
         self.model = build_model(cfg)
         self.criterion = build_loss(cfg)
         self.best_ia_fmax = -float("inf")
-        self._val_probs: List[torch.Tensor] = []
-        self._val_targets: List[torch.Tensor] = []
-        self._val_losses: List[torch.Tensor] = []
+        self._val_store: Optional[_ValidationArrayStore] = None
+        self._val_losses: List[float] = []
 
     def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         outputs = self.model(
@@ -347,8 +393,9 @@ class PFAGCNLightningModule(LightningModule):
         return loss
 
     def on_validation_epoch_start(self) -> None:
-        self._val_probs = []
-        self._val_targets = []
+        if self._val_store is not None:
+            self._val_store.cleanup()
+        self._val_store = _ValidationArrayStore(self.model.num_functions)
         self._val_losses = []
 
     def validation_step(
@@ -357,22 +404,24 @@ class PFAGCNLightningModule(LightningModule):
         logits = self.forward(batch)
         loss = self.criterion(logits, batch["targets"])
         probabilities = torch.sigmoid(logits)
-        self._val_probs.append(probabilities.detach().cpu())
-        self._val_targets.append(batch["targets"].detach().cpu())
-        self._val_losses.append(loss.detach().cpu())
+        if self._val_store is None:
+            self._val_store = _ValidationArrayStore(self.model.num_functions)
+        self._val_store.append(probabilities, batch["targets"])
+        self._val_losses.append(float(loss.detach().cpu().item()))
 
     def on_validation_epoch_end(self) -> None:
-        if not self._val_probs:
+        if self._val_store is None:
             return
-        probs_np = torch.cat(self._val_probs).numpy()
-        targets_np = torch.cat(self._val_targets).numpy()
+        probs_np, targets_np = self._val_store.materialize()
         metrics = compute_cafa_metrics(
             probabilities=probs_np,
             targets=targets_np,
             thresholds=self.thresholds,
             ia_weights=self.ia_weights,
         )
-        mean_loss = float(torch.stack(self._val_losses).mean().item())
+        mean_loss = float(np.mean(self._val_losses)) if self._val_losses else 0.0
+        self._val_store.cleanup()
+        self._val_store = None
 
         self.log(
             "val/loss",
@@ -517,6 +566,16 @@ def _precision_arg(cfg: DictConfig) -> Any:
     return precision_cfg
 
 
+def _configure_tensor_core_precision() -> None:
+    """Enable Tensor Core matmul optimizations when available."""
+
+    set_precision = getattr(torch, "set_float32_matmul_precision", None)
+    if set_precision is None:
+        return
+    if torch.cuda.is_available():
+        set_precision("medium")
+
+
 ###### Hydra main ######
 
 
@@ -525,6 +584,7 @@ def run_training(cfg: DictConfig) -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     apply_system_env(cfg)
+    _configure_tensor_core_precision()
     base_dir = Path(get_original_cwd())
     seed_everything(int(cfg.training.get("seed", 42)), workers=True)
     prot_prior_cfg = OmegaConf.to_container(
@@ -548,11 +608,24 @@ def run_training(cfg: DictConfig) -> None:
         protein_prior_cfg=prot_prior_cfg,
     )
 
+    val_capacity_hint = 0
+    if val_loader is not None:
+        dataset = getattr(val_loader, "dataset", None)
+        try:
+            val_capacity_hint = len(dataset) if dataset is not None else 0  # type: ignore[arg-type]
+        except TypeError:
+            val_capacity_hint = 0
+
     thresholds = list(cfg.evaluation.get("threshold_grid", [0.5]))
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     ia_weights = load_ia_weights(cfg_dict, base_dir)
 
-    model = PFAGCNLightningModule(cfg=cfg, thresholds=thresholds, ia_weights=ia_weights)
+    model = PFAGCNLightningModule(
+        cfg=cfg,
+        thresholds=thresholds,
+        ia_weights=ia_weights,
+        val_capacity_hint=val_capacity_hint,
+    )
     mlflow_logger = _prepare_mlflow_logger(cfg, base_dir)
 
     callbacks = [

@@ -59,8 +59,13 @@ class PFAGCN(nn.Module):
         dccn_channels = model_cfg.dccn.channels
         graph_dim = model_cfg.seq_final.graph_dim
         shared_dim = model_cfg.seq_gating.shared_dim
-        self.use_protein_prior = bool(getattr(model_cfg.prot_prior, "enabled", False))
-        self.protein_prior_method = getattr(model_cfg.prot_prior, "method", "cosine")
+        prot_prior_cfg = getattr(model_cfg, "prot_prior", SimpleNamespace())
+        self.use_protein_prior = bool(getattr(prot_prior_cfg, "enabled", False))
+        self.protein_prior_method = getattr(prot_prior_cfg, "method", "cosine")
+        sim_threshold = getattr(prot_prior_cfg, "sim_threshold", 0.3)
+        self.protein_prior_sim_threshold = (
+            float(sim_threshold) if sim_threshold is not None else None
+        )
         self.use_go_prior = bool(getattr(model_cfg.go_prior, "enabled", True))
 
         if shared_dim != graph_dim:
@@ -410,14 +415,21 @@ class PFAGCN(nn.Module):
             return torch.zeros((0, 0), device=pooled.device, dtype=pooled.dtype)
 
         method = str(self.protein_prior_method).lower()
+        apply_threshold = method == "cosine"
         if method == "identity":
             return torch.eye(pooled.size(0), device=pooled.device, dtype=pooled.dtype)
         if method != "cosine":
             log.warning("Unknown protein prior method '%s'; defaulting to cosine similarity.", method)
+            apply_threshold = True
 
         normed = F.normalize(pooled, dim=1)
         cosine = torch.matmul(normed, normed.T)
-        return torch.clamp(cosine, min=0.0)
+        cosine = torch.clamp(cosine, min=0.0)
+
+        threshold = self.protein_prior_sim_threshold if apply_threshold else None
+        if threshold is not None:
+            cosine = torch.where(cosine >= threshold, cosine, torch.zeros_like(cosine))
+        return cosine
 
     def _ensure_adjacency(
         self,

@@ -21,6 +21,7 @@ from torch.utils.data import DataLoader, Dataset
 
 log = None
 _PROTEIN_PRIOR_CACHE: Dict[Path, torch.Tensor] = {}
+_GO_PRIOR_CACHE: Dict[Path, torch.Tensor] = {}
 _ASPECT_ALIASES = {
     "C": "C",
     "CC": "C",
@@ -244,11 +245,15 @@ class SequenceAnnotationDataset(Dataset):
 
 ###### HELPERS FOR CACHED DATA ######
 
-def load_npz_tensor(path: Path, key: str | None = None) -> torch.Tensor:
+def load_npz_tensor(
+    path: Path,
+    key: str | None = None,
+    dtype: torch.dtype | None = torch.float32,
+) -> torch.Tensor:
     """Load a tensor from .npz/.npy/.pt files.
 
     The loader accepts numpy and torch serialisations, normalising everything to
-    torch.float32 tensors for use in training.
+    torch tensors and optionally casting to the requested dtype.
     """
 
     if not path.exists():
@@ -258,7 +263,7 @@ def load_npz_tensor(path: Path, key: str | None = None) -> torch.Tensor:
     if suffix in {".pt", ".pth"}:
         payload = torch.load(path, map_location="cpu")
         if isinstance(payload, torch.Tensor):
-            return payload.to(dtype=torch.float32)
+            return _ensure_tensor_dtype(payload, dtype)
         if isinstance(payload, Mapping):
             if key is None:
                 raise KeyError(
@@ -267,12 +272,12 @@ def load_npz_tensor(path: Path, key: str | None = None) -> torch.Tensor:
             tensor = payload.get(key)
             if tensor is None:
                 raise KeyError(f"Key '{key}' missing from {path.name}")
-            return tensor.to(dtype=torch.float32)
+            return _ensure_tensor_dtype(tensor, dtype)
         raise TypeError(f"Unsupported payload in {path}: {type(payload)}")
 
     if suffix == ".npy":
         array = np.load(path, allow_pickle=False)
-        return torch.from_numpy(array).to(dtype=torch.float32)
+        return _ensure_tensor_dtype(torch.from_numpy(array), dtype)
 
     if suffix == ".npz":
         archive = np.load(path, allow_pickle=False)
@@ -283,12 +288,24 @@ def load_npz_tensor(path: Path, key: str | None = None) -> torch.Tensor:
                 raise KeyError(
                     f"Key '{array_key}' not found in {path.name}; available={list(archive.files)}"
                 )
-            tensor = archive[array_key]
+            tensor = torch.from_numpy(archive[array_key])
         finally:
             archive.close()
-        return torch.from_numpy(tensor).to(dtype=torch.float32)
+        return _ensure_tensor_dtype(tensor, dtype)
 
     raise ValueError(f"Unsupported tensor file extension: {suffix}")
+
+
+def _ensure_tensor_dtype(tensor: torch.Tensor, dtype: torch.dtype | None) -> torch.Tensor:
+    """Cast tensor to dtype if requested; otherwise preserve on-disk dtype."""
+
+    if not isinstance(tensor, torch.Tensor):
+        tensor = torch.as_tensor(tensor)
+    if dtype is None:
+        return tensor
+    if tensor.dtype == dtype:
+        return tensor
+    return tensor.to(dtype=dtype)
 
 
 def _load_cached_protein_prior(path: Path) -> torch.Tensor:
@@ -311,6 +328,20 @@ def _load_cached_protein_prior(path: Path) -> torch.Tensor:
         array = archive
     tensor = torch.as_tensor(array, dtype=torch.float32)
     _PROTEIN_PRIOR_CACHE[resolved] = tensor
+    return tensor
+
+
+def _load_cached_go_prior(path: Path) -> torch.Tensor:
+    """Load and cache GO prior adjacency matrices."""
+
+    resolved = path.resolve()
+    cached = _GO_PRIOR_CACHE.get(resolved)
+    if cached is not None:
+        return cached
+    tensor = load_npz_tensor(resolved, dtype=torch.float16)
+    if tensor.ndim != 2:
+        raise ValueError(f"GO prior at {path} must be a square matrix.")
+    _GO_PRIOR_CACHE[resolved] = tensor
     return tensor
 
 
@@ -385,7 +416,9 @@ class ManifestDataset(Dataset):
     def _load_embedding(self, record: Mapping[str, Any]) -> torch.Tensor:
         if "embedding_path" in record:
             emb_path = Path(record["embedding_path"])
-            tensor = self._load_array_from_path(emb_path, key=record.get("embedding_key"))
+            tensor = self._load_array_from_path(
+                emb_path, key=record.get("embedding_key"), dtype=None
+            )
         else:
             raise KeyError("Manifest record must include embedding info")
 
@@ -393,7 +426,12 @@ class ManifestDataset(Dataset):
             raise ValueError("Embeddings must be 2D (length, feature_dim)")
         return tensor
 
-    def _load_tensor(self, record: Mapping[str, Any], key: str) -> torch.Tensor:
+    def _load_tensor(
+        self,
+        record: Mapping[str, Any],
+        key: str,
+        dtype: torch.dtype | None = torch.float32,
+    ) -> torch.Tensor:
         if key in record:
             value = record[key]
             if isinstance(value, (list, tuple)):
@@ -401,7 +439,7 @@ class ManifestDataset(Dataset):
             if isinstance(value, (int, float)):
                 return torch.tensor([value])
             if isinstance(value, str):
-                return self._load_array_from_path(Path(value))
+                return self._load_array_from_path(Path(value), dtype=dtype)
             if isinstance(value, np.ndarray):
                 return torch.from_numpy(value)
             if isinstance(value, torch.Tensor):
@@ -409,21 +447,42 @@ class ManifestDataset(Dataset):
             raise TypeError(f"Unsupported value type for {key}: {type(value)}")
         path_key = f"{key}_path"
         if path_key in record:
-            return self._load_array_from_path(Path(record[path_key]))
+            return self._load_array_from_path(Path(record[path_key]), dtype=dtype)
         raise KeyError(f"Manifest record missing '{key}' or '{path_key}'")
 
     def _load_optional_tensor(
         self, record: Mapping[str, Any], base_key: str
     ) -> Optional[torch.Tensor]:
+        if base_key == "go_prior":
+            tensor = self._load_go_prior(record)
+            if tensor is not None:
+                return tensor
         try:
-            return self._load_tensor(record, key=base_key).to(dtype=torch.float32)
+            return self._load_tensor(record, key=base_key, dtype=None).to(dtype=torch.float32)
         except KeyError:
             return None
 
-    def _load_array_from_path(self, path: Path, key: Optional[str] = None) -> torch.Tensor:
+    def _load_go_prior(self, record: Mapping[str, Any]) -> Optional[torch.Tensor]:
+        if "go_prior" in record:
+            tensor = torch.as_tensor(record["go_prior"])
+            return tensor.to(dtype=torch.float16)
+        path = record.get("go_prior_path")
+        if path is None:
+            return None
+        resolved = Path(path)
+        if not resolved.is_absolute():
+            resolved = (self.manifest_path.parent / resolved).resolve()
+        return _load_cached_go_prior(resolved)
+
+    def _load_array_from_path(
+        self,
+        path: Path,
+        key: Optional[str] = None,
+        dtype: torch.dtype | None = torch.float32,
+    ) -> torch.Tensor:
         if not path.is_absolute():
             path = (self.manifest_path.parent / path).resolve()
-        return load_npz_tensor(path, key)
+        return load_npz_tensor(path, key, dtype=dtype)
 
 
 

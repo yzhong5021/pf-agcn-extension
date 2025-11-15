@@ -17,6 +17,7 @@ prot_prior:
   top_p_mass: 0.9
   temperature: 1.0
   symmetric: true
+  sim_threshold: 0.3
 
 go_prior:
   enabled: true

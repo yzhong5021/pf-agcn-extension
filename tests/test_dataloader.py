@@ -75,6 +75,14 @@ def test_load_npz_tensor_variants(tmp_path: Path) -> None:
     assert torch.equal(mapping_tensor, torch.full((2, 1), 3.0))
 
 
+def test_load_npz_tensor_preserves_dtype(tmp_path: Path) -> None:
+    half_path = tmp_path / "half.npy"
+    np.save(half_path, np.ones((2, 2), dtype=np.float16))
+
+    preserved = load_npz_tensor(half_path, dtype=None)
+    assert preserved.dtype == torch.float16
+
+
 def test_manifest_dataset_and_collate(tmp_path: Path) -> None:
     emb0 = tmp_path / "emb0.npy"
     emb1 = tmp_path / "emb1.npy"
@@ -105,7 +113,12 @@ def test_manifest_dataset_and_collate(tmp_path: Path) -> None:
     manifest_path.write_text(json.dumps(records), encoding="utf-8")
 
     dataset = ManifestDataset(manifest_path)
-    batch = [dataset[0], dataset[1]]
+    sample0 = dataset[0]
+    assert sample0["go_prior"].dtype == torch.float16
+    go_prior_path.unlink()
+    sample1 = dataset[1]
+    assert torch.equal(sample0["go_prior"], sample1["go_prior"])
+    batch = [sample0, sample1]
     collated = collate_manifest_batch(batch)
 
     assert collated["seq_embeddings"].shape == (2, 3, 4)
