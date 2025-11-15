@@ -271,17 +271,22 @@ def load_npz_tensor(path: Path, key: str | None = None) -> torch.Tensor:
         raise TypeError(f"Unsupported payload in {path}: {type(payload)}")
 
     if suffix == ".npy":
-        array = np.load(path)
+        array = np.load(path, allow_pickle=False)
         return torch.from_numpy(array).to(dtype=torch.float32)
 
     if suffix == ".npz":
-        archive = np.load(path)
-        array_key = key or "arr_0"
-        if array_key not in archive:
-            raise KeyError(
-                f"Key '{array_key}' not found in {path.name}; available={list(archive.keys())}"
-            )
-        return torch.from_numpy(archive[array_key]).to(dtype=torch.float32)
+        archive = np.load(path, allow_pickle=False)
+        try:
+            default_key = "embeddings" if "embeddings" in archive.files else "arr_0"
+            array_key = key or default_key
+            if array_key not in archive:
+                raise KeyError(
+                    f"Key '{array_key}' not found in {path.name}; available={list(archive.files)}"
+                )
+            tensor = archive[array_key]
+        finally:
+            archive.close()
+        return torch.from_numpy(tensor).to(dtype=torch.float32)
 
     raise ValueError(f"Unsupported tensor file extension: {suffix}")
 

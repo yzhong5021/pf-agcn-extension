@@ -6,7 +6,7 @@ cudnn_deterministic: true
 cudnn_benchmark: false
 
 paths:
-  cache_dir: /state/partition1/user/lerchen/cache
+  cache_dir: /state/partition1/user/lerchen/cache # currently useless;
   data_root: /orcd/home/002/lerchen/code/cafa6
   results_root: /orcd/home/002/lerchen/code/results
 

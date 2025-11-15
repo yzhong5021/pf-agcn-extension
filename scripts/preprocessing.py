@@ -13,6 +13,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 
 import numpy as np
 import pandas as pd
+import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -44,6 +45,7 @@ EMBEDDER_FACTORIES = {
     "prost": ProstEmbed,
 }
 _EMBEDDER_SINGLETONS: Dict[str, Any] = {}
+EMBED_BATCH_SIZE = max(1, int(os.environ.get("PF_AGCN_EMBED_BATCH", "8")))
 
 
 @dataclass
@@ -77,8 +79,32 @@ def _embedding_cache_path(entry_id: str, backend: str) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     safe_id = "".join(c if c.isalnum() or c in {"-", "_"} else "_" for c in entry_id)
     digest = hashlib.md5(entry_id.encode("utf-8")).hexdigest()[:8]
-    filename = f"{safe_id or 'protein'}_{digest}.npy"
+    filename = f"{safe_id or 'protein'}_{digest}.npz"
     return root / filename
+
+
+def _write_embedding_cache(path: Path, array: np.ndarray) -> tuple[int, int]:
+    """Persist embeddings with float16 compression."""
+
+    cast = array.astype(np.float16, copy=False)
+    np.savez_compressed(path, embeddings=cast)
+    return cast.shape
+
+
+def _read_embedding_metadata(path: Path) -> tuple[int, int]:
+    """Return (length, dim) from an on-disk cache without loading to float32."""
+
+    suffix = path.suffix.lower()
+    if suffix == ".npz":
+        archive = np.load(path, mmap_mode="r", allow_pickle=False)
+        key = "embeddings" if "embeddings" in archive.files else "arr_0"
+        shape = archive[key].shape
+        archive.close()
+        return int(shape[0]), int(shape[1])
+    if suffix == ".npy":
+        array = np.load(path, mmap_mode="r", allow_pickle=False)
+        return int(array.shape[0]), int(array.shape[1])
+    raise ValueError(f"Unsupported embedding cache format: {path.suffix}")
 
 
 def _model_cache_dir(backend: str) -> Path:
@@ -114,20 +140,64 @@ def _ensure_cached_embedding(
     max_length: Optional[int],
     backend: str,
 ) -> tuple[Path, int, int]:
-    cache_path = _embedding_cache_path(entry_id, backend)
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata = _ensure_embeddings_for_entries(
+        [(entry_id, sequence)],
+        max_length=max_length,
+        backend=backend,
+        batch_size=1,
+    )
+    path, length, dim = metadata[entry_id]
+    return path, length, dim
 
-    if cache_path.exists():
-        array = np.load(cache_path, mmap_mode="r")
-        length, dim = array.shape
-        return cache_path, int(length), int(dim)
+
+def _ensure_embeddings_for_entries(
+    entries: Sequence[tuple[str, str]],
+    *,
+    max_length: Optional[int],
+    backend: str,
+    batch_size: int = EMBED_BATCH_SIZE,
+) -> Dict[str, tuple[Path, int, int]]:
+    """Ensure cached embeddings exist for provided entries.
+
+    Generates embeddings in micro-batches for throughput while keeping the
+    working set modest. Returns metadata required for manifest construction.
+    """
+
+    meta: Dict[str, tuple[Path, int, int]] = {}
+    pending: list[tuple[str, str, Path]] = []
+    for entry_id, sequence in entries:
+        cache_path = _embedding_cache_path(entry_id, backend)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        if cache_path.exists():
+            length, dim = _read_embedding_metadata(cache_path)
+            meta[entry_id] = (cache_path, length, dim)
+            continue
+        legacy_path = cache_path.with_suffix(".npy")
+        if legacy_path.exists():
+            array = np.load(legacy_path, mmap_mode="r", allow_pickle=False)
+            length, dim = _write_embedding_cache(cache_path, array)
+            meta[entry_id] = (cache_path, length, dim)
+            continue
+        pending.append((entry_id, sequence, cache_path))
+
+    if not pending:
+        return meta
 
     embedder = _get_seq_embedder(max_length, backend)
-    embeddings, mask = embedder([sequence])
-    residue_embeddings = embeddings[0][mask[0]].detach().cpu().numpy().astype(np.float32)
-    np.save(cache_path, residue_embeddings)
-    length, dim = residue_embeddings.shape
-    return cache_path, int(length), int(dim)
+    chunk_size = max(1, batch_size)
+    for start in range(0, len(pending), chunk_size):
+        chunk = pending[start : start + chunk_size]
+        sequences = [seq for _, seq, _ in chunk]
+        embeddings, masks = embedder(sequences)
+        embeddings = embeddings.detach().cpu()
+        masks = masks.detach().cpu()
+        for idx, (entry_id, _seq, cache_path) in enumerate(chunk):
+            masked = embeddings[idx][masks[idx]]
+            array = masked.numpy()
+            length, dim = _write_embedding_cache(cache_path, array)
+            meta[entry_id] = (cache_path, length, dim)
+
+    return meta
 
 
 def _resolve_split_paths(data_cfg: Mapping[str, Any]) -> Dict[str, Path]:
@@ -343,16 +413,21 @@ def prepare_manifests(
 
     record_templates: Dict[str, Dict[str, Any]] = {}
     sequence_lookup: Dict[str, str] = {}
-    embedding_width: Optional[int] = None
+    ordered_entries: list[tuple[str, str]] = []
     for row in sequences.itertuples():
-        entry_id = row.entry_id
+        entry_id = str(row.entry_id)
         sequence_lookup[entry_id] = row.sequence
-        cache_path, _, dim = _ensure_cached_embedding(
-            entry_id=entry_id,
-            sequence=row.sequence,
-            max_length=max_length,
-            backend=backend,
-        )
+        ordered_entries.append((entry_id, row.sequence))
+
+    embedding_meta = _ensure_embeddings_for_entries(
+        ordered_entries,
+        max_length=max_length,
+        backend=backend,
+    )
+
+    embedding_width: Optional[int] = None
+    for entry_id, _sequence in ordered_entries:
+        cache_path, _, dim = embedding_meta[entry_id]
         if embedding_width is None:
             embedding_width = dim
         elif embedding_width != dim:
