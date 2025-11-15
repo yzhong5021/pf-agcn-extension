@@ -22,7 +22,7 @@ training:
 
 data_config:
   batch_size: 8
-  num_workers: 4
+  num_workers: 2
   pin_memory: true
 
 evaluation:

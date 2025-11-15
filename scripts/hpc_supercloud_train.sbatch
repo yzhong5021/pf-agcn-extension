@@ -38,5 +38,5 @@ for ASPECT in MF BP CC; do
     --config-name hpc_full_config \
     --aspect "${ASPECT}" \
     --experiment_name="pfagcn_supercloud_test" \
-    --run_name="pfagcn_supercloud_test_{$ASPECT}"
+    --run_name="pfagcn_supercloud_test_${ASPECT}"
 done

@@ -608,13 +608,6 @@ def run_training(cfg: DictConfig) -> None:
         protein_prior_cfg=prot_prior_cfg,
     )
 
-    val_capacity_hint = 0
-    if val_loader is not None:
-        dataset = getattr(val_loader, "dataset", None)
-        try:
-            val_capacity_hint = len(dataset) if dataset is not None else 0  # type: ignore[arg-type]
-        except TypeError:
-            val_capacity_hint = 0
 
     thresholds = list(cfg.evaluation.get("threshold_grid", [0.5]))
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
@@ -624,8 +617,8 @@ def run_training(cfg: DictConfig) -> None:
         cfg=cfg,
         thresholds=thresholds,
         ia_weights=ia_weights,
-        val_capacity_hint=val_capacity_hint,
     )
+    
     mlflow_logger = _prepare_mlflow_logger(cfg, base_dir)
 
     callbacks = [
