@@ -8,6 +8,7 @@ scikit-learn==1.7.2
 mlflow==3.4.0
 cafaeval==1.2.1
 transformers==4.57.1
+sentencepiece==0.2.0
 biopython==1.85
 PyYAML==6.0.3
 pytest==8.4.2

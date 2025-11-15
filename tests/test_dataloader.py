@@ -64,6 +64,14 @@ def test_load_npz_tensor_variants(tmp_path: Path) -> None:
     pt_mapping_path = tmp_path / "tensor_map.pt"
     torch.save({"foo": torch.full((2, 1), 3.0)}, pt_mapping_path)
 
+    adjacency_matrix = np.array([[1.0, 0.1], [0.1, 1.0]], dtype=np.float32)
+    go_prior_npz = tmp_path / "go_prior.npz"
+    np.savez(go_prior_npz, adjacency=adjacency_matrix, terms=np.array([1, 2, 3], dtype=np.int32))
+
+    graph_matrix = np.array([[0.0, 0.5], [0.5, 0.0]], dtype=np.float32)
+    graph_npz = tmp_path / "graph_prior.npz"
+    np.savez(graph_npz, graph=graph_matrix, metadata=np.array([42], dtype=np.int32))
+
     assert load_npz_tensor(npy_path).shape == (2, 3)
     assert torch.equal(load_npz_tensor(npz_path, key="custom"), torch.full((2, 2), 2.0))
     assert load_npz_tensor(pt_tensor_path).dtype == torch.float32
@@ -73,6 +81,16 @@ def test_load_npz_tensor_variants(tmp_path: Path) -> None:
 
     mapping_tensor = load_npz_tensor(pt_mapping_path, key="foo")
     assert torch.equal(mapping_tensor, torch.full((2, 1), 3.0))
+    go_prior_tensor = load_npz_tensor(go_prior_npz, dtype=torch.float16)
+    assert torch.allclose(
+        go_prior_tensor.float(), torch.from_numpy(adjacency_matrix), atol=1e-3, rtol=1e-3
+    )
+    assert go_prior_tensor.dtype == torch.float16
+
+    with pytest.raises(KeyError):
+        load_npz_tensor(graph_npz)
+    resolved_graph = load_npz_tensor(graph_npz, key_priority=("graph",))
+    assert torch.allclose(resolved_graph, torch.from_numpy(graph_matrix))
 
 
 def test_load_npz_tensor_preserves_dtype(tmp_path: Path) -> None:
@@ -118,12 +136,50 @@ def test_manifest_dataset_and_collate(tmp_path: Path) -> None:
     go_prior_path.unlink()
     sample1 = dataset[1]
     assert torch.equal(sample0["go_prior"], sample1["go_prior"])
+
+
+def test_manifest_dataset_go_prior_key_priority(tmp_path: Path) -> None:
+    emb = tmp_path / "emb.npy"
+    np.save(emb, np.random.randn(2, 4).astype("float32"))
+
+    archive = tmp_path / "compound_prior.npz"
+    adjacency = np.array([[1.0, 0.2], [0.2, 1.0]], dtype=np.float32)
+    np.savez(archive, graph=adjacency, stats=np.arange(2, dtype=np.int32))
+
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            [
+                {
+                    "embedding_path": emb.name,
+                    "labels": [1, 0],
+                    "go_prior_path": archive.name,
+                    "go_prior_key_priority": ["graph"],
+                },
+                {
+                    "embedding_path": emb.name,
+                    "labels": [0, 1],
+                    "go_prior_path": archive.name,
+                    "go_prior_key": "graph",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    dataset = ManifestDataset(manifest_path)
+    sample0 = dataset[0]
+    sample1 = dataset[1]
+    assert sample0["go_prior"].dtype == torch.float16
+    assert torch.allclose(
+        sample0["go_prior"].float(), torch.from_numpy(adjacency), atol=1e-3, rtol=1e-3
+    )
+    assert torch.equal(sample0["go_prior"], sample1["go_prior"])
     batch = [sample0, sample1]
     collated = collate_manifest_batch(batch)
 
-    assert collated["seq_embeddings"].shape == (2, 3, 4)
-    assert collated["targets"].shape == (2, 4)
-    assert collated["protein_prior"].shape == (2, 3, 3)
+    assert collated["seq_embeddings"].shape == (2, 2, 4)
+    assert collated["targets"].shape == (2, 2)
     assert collated["go_prior"].shape == (2, 2)
 
     loader = build_manifest_dataloader(str(manifest_path), {"batch_size": 1}, base_dir=tmp_path, shuffle=False)

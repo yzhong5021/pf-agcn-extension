@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -21,7 +21,16 @@ from torch.utils.data import DataLoader, Dataset
 
 log = None
 _PROTEIN_PRIOR_CACHE: Dict[Path, torch.Tensor] = {}
-_GO_PRIOR_CACHE: Dict[Path, torch.Tensor] = {}
+_GO_PRIOR_CACHE: Dict[Tuple[Path, Optional[str], Optional[Tuple[str, ...]]], torch.Tensor] = {}
+_DEFAULT_NPZ_KEY_PRIORITY: Tuple[str, ...] = (
+    "embeddings",
+    "adjacency",
+    "tensor",
+    "matrix",
+    "weights",
+    "data",
+    "arr_0",
+)
 _ASPECT_ALIASES = {
     "C": "C",
     "CC": "C",
@@ -249,11 +258,19 @@ def load_npz_tensor(
     path: Path,
     key: str | None = None,
     dtype: torch.dtype | None = torch.float32,
+    key_priority: Sequence[str] | None = None,
 ) -> torch.Tensor:
     """Load a tensor from .npz/.npy/.pt files.
 
     The loader accepts numpy and torch serialisations, normalising everything to
     torch tensors and optionally casting to the requested dtype.
+
+    Args:
+        path: Location of the persisted tensor.
+        key: Explicit array key to read from structured formats.
+        dtype: Optional dtype override for the returned tensor.
+        key_priority: Ordered list of fallback keys to try when `key` is not
+            provided and the archive offers multiple named arrays.
     """
 
     if not path.exists():
@@ -282,18 +299,53 @@ def load_npz_tensor(
     if suffix == ".npz":
         archive = np.load(path, allow_pickle=False)
         try:
-            default_key = "embeddings" if "embeddings" in archive.files else "arr_0"
-            array_key = key or default_key
-            if array_key not in archive:
-                raise KeyError(
-                    f"Key '{array_key}' not found in {path.name}; available={list(archive.files)}"
-                )
-            tensor = torch.from_numpy(archive[array_key])
+            if key is not None:
+                if key not in archive:
+                    raise KeyError(
+                        f"Key '{key}' not found in {path.name}; available={list(archive.files)}"
+                    )
+                array = archive[key]
+            else:
+                array = _select_npz_array(path, archive, key_priority)
         finally:
             archive.close()
-        return _ensure_tensor_dtype(tensor, dtype)
+        return _ensure_tensor_dtype(torch.from_numpy(array), dtype)
 
     raise ValueError(f"Unsupported tensor file extension: {suffix}")
+
+
+def _select_npz_array(
+    path: Path,
+    archive: np.lib.npyio.NpzFile,
+    key_priority: Sequence[str] | None,
+) -> np.ndarray:
+    """Resolve a best-effort array key from an .npz archive."""
+
+    seen: set[str] = set()
+    candidates: list[str] = []
+    if key_priority:
+        for candidate in key_priority:
+            if candidate is None:
+                continue
+            cand = str(candidate).strip()
+            if not cand or cand in seen:
+                continue
+            seen.add(cand)
+            candidates.append(cand)
+    for fallback in _DEFAULT_NPZ_KEY_PRIORITY:
+        if fallback in seen:
+            continue
+        seen.add(fallback)
+        candidates.append(fallback)
+    searched: list[str] = []
+    for candidate in candidates:
+        searched.append(candidate)
+        if candidate in archive.files:
+            return archive[candidate]
+    raise KeyError(
+        f"Could not locate a tensor in {path.name}; tried {searched} but archive "
+        f"only provides {list(archive.files)}"
+    )
 
 
 def _ensure_tensor_dtype(tensor: torch.Tensor, dtype: torch.dtype | None) -> torch.Tensor:
@@ -331,17 +383,29 @@ def _load_cached_protein_prior(path: Path) -> torch.Tensor:
     return tensor
 
 
-def _load_cached_go_prior(path: Path) -> torch.Tensor:
+def _load_cached_go_prior(
+    path: Path,
+    *,
+    key: str | None = None,
+    key_priority: Sequence[str] | None = None,
+) -> torch.Tensor:
     """Load and cache GO prior adjacency matrices."""
 
     resolved = path.resolve()
-    cached = _GO_PRIOR_CACHE.get(resolved)
+    priority_tuple = tuple(key_priority) if key_priority else None
+    cache_key = (resolved, key, priority_tuple)
+    cached = _GO_PRIOR_CACHE.get(cache_key)
     if cached is not None:
         return cached
-    tensor = load_npz_tensor(resolved, dtype=torch.float16)
+    tensor = load_npz_tensor(
+        resolved,
+        key=key,
+        dtype=torch.float16,
+        key_priority=priority_tuple or ("adjacency", "matrix"),
+    )
     if tensor.ndim != 2:
         raise ValueError(f"GO prior at {path} must be a square matrix.")
-    _GO_PRIOR_CACHE[resolved] = tensor
+    _GO_PRIOR_CACHE[cache_key] = tensor
     return tensor
 
 
@@ -351,7 +415,8 @@ class ManifestDataset(Dataset):
     Each record must provide at least a labels field (multi-hot array or
     path to a persisted tensor) and one of embedding or embedding_path.
     Optional fields include lengths, protein_prior (or
-    protein_prior_path/protein_prior_index), and go_prior (or go_prior_path).
+    protein_prior_path/protein_prior_index), and go_prior (or go_prior_path
+    with optional go_prior_key/go_prior_key_priority hints).
     """
 
     def __init__(self, manifest_path: Path) -> None:
@@ -472,7 +537,21 @@ class ManifestDataset(Dataset):
         resolved = Path(path)
         if not resolved.is_absolute():
             resolved = (self.manifest_path.parent / resolved).resolve()
-        return _load_cached_go_prior(resolved)
+        key = record.get("go_prior_key")
+        if key is not None:
+            if not isinstance(key, str):
+                raise TypeError("go_prior_key must be a string.")
+            key = key.strip() or None
+        priority_field: Optional[Tuple[str, Any]] = None
+        if "go_prior_key_priority" in record:
+            priority_field = ("go_prior_key_priority", record["go_prior_key_priority"])
+        elif "go_prior_candidates" in record:
+            priority_field = ("go_prior_candidates", record["go_prior_candidates"])
+        key_priority: Optional[Tuple[str, ...]] = None
+        if priority_field is not None:
+            field_name, raw_value = priority_field
+            key_priority = _normalize_optional_key_sequence(raw_value, field_name)
+        return _load_cached_go_prior(resolved, key=key, key_priority=key_priority)
 
     def _load_array_from_path(
         self,
@@ -621,3 +700,25 @@ def load_ia_weights(cfg: Mapping[str, Any], base_dir: Path) -> Optional[np.ndarr
     else:
         weights = data
     return np.asarray(weights, dtype=np.float32)
+def _normalize_optional_key_sequence(value: Any, field_name: str) -> Optional[Tuple[str, ...]]:
+    """Convert optional manifest key lists to a canonical tuple."""
+
+    if value is None:
+        return None
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+    else:
+        raise TypeError(f"{field_name} must be a string or a list/tuple of strings.")
+    cleaned: list[str] = []
+    for item in items:
+        if item is None:
+            continue
+        text = str(item).strip()
+        if not text:
+            continue
+        cleaned.append(text)
+    if not cleaned:
+        return None
+    return tuple(cleaned)

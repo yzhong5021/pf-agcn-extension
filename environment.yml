@@ -25,3 +25,4 @@ dependencies:
   - pip:
       - cafaeval>=1.2.1
       - transformers>=4.37
+      - sentencepiece>=0.2.0
