@@ -88,7 +88,9 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Override inference batch size",
     )
 
-    return parser.parse_args(argv)
+    args, hydra_overrides = parser.parse_known_args(argv)
+    setattr(args, "hydra_overrides", hydra_overrides)
+    return args
 
 
 def _resolve_config_dir(config_path: str | Path) -> Path:
@@ -239,9 +241,13 @@ def _ensure_manifests(cfg: DictConfig, aspect: str) -> List[str]:
     return overrides
 
 
-def run_train_command(config_path: str, config_name: str, aspect: str) -> None:
+def run_train_command(
+    config_path: str, config_name: str, aspect: str, hydra_overrides: Optional[List[str]] = None
+) -> None:
     aspect_upper = aspect.upper()
     overrides = [f"+aspect={aspect_upper}"]
+    if hydra_overrides:
+        overrides.extend(hydra_overrides)
     cfg = _compose_config(config_path, config_name, overrides)
     _finalize_hydra_runtime(cfg, config_path, config_name)
     apply_system_env(cfg)
@@ -335,8 +341,10 @@ def main(argv: Optional[List[str]] = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     args = parse_args(argv or sys.argv[1:])
     if args.command == "train":
-        run_train_command(args.config_path, args.config_name, args.aspect)
+        run_train_command(args.config_path, args.config_name, args.aspect, args.hydra_overrides)
     elif args.command == "predict":
+        if getattr(args, "hydra_overrides", None):
+            raise ValueError("Hydra overrides are only supported for the 'train' command.")
         run_predict(args)
 
 
