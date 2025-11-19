@@ -63,7 +63,7 @@ class ClassificationHead(nn.Module):
         self.f_proj = _Proj(d_in, p_drop=dropout)
 
         self.bias = nn.Parameter(torch.zeros(N_C))
-        self.log_tau = nn.Parameter(torch.zeros(()))
+        self.raw_tau = nn.Parameter(torch.zeros(()))
 
         self._init_weights()
 
@@ -74,7 +74,7 @@ class ClassificationHead(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
         nn.init.zeros_(self.bias)
-        nn.init.zeros_(self.log_tau)
+        nn.init.zeros_(self.raw_tau)
 
     def forward(
         self,
@@ -97,12 +97,14 @@ class ClassificationHead(nn.Module):
         protein_embeddings = self.p_proj(protein_embeddings)
         function_embeddings = self.f_proj(function_embeddings)
 
-        scale = protein_embeddings.size(-1) ** 0.5
-        logits = (
-            torch.exp(self.log_tau)
-            * (protein_embeddings @ function_embeddings.T)
-            / scale
-        ) + self.bias
+        t_tau = torch.tanh(self.raw_tau) * 4.0
+        
+        scale = protein_embeddings.size(-1) ** 0.5                                                                                         
+        raw_scores = protein_embeddings @ function_embeddings.T                                                                                                                                                       
+        logits = torch.exp(t_tau) * raw_scores / scale
+        logits = torch.clamp(logits, -50, 50)
+        bias = torch.clamp(self.bias, -100.0, 100.0)
+        logits = logits + bias
 
         return logits, protein_embeddings, function_embeddings
 

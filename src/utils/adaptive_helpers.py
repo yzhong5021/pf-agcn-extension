@@ -65,15 +65,21 @@ def _prepare_prior(
     else:
         S = S.to(device=device, dtype=dtype)
 
+    eps = 1e-6
+
     I = torch.eye(S.size(0), device=S.device, dtype=dtype)
     S = S + I
 
-    rowsum = S.sum(dim=1, keepdim=True).clamp_min(1e-12)
+    #hande NaN blowup
+    S = torch.nan_to_num(S, nan=0.0, posinf=0.0, neginf=0.0)
+    S = S.clamp(min = eps)
+
+    rowsum = S.sum(dim=1, keepdim=True).clamp_min(eps)
     Rf = S / rowsum
 
     if not bidirectional:
         return Rf
 
-    colsum = S.sum(dim=0, keepdim=True).clamp_min(1e-12)
+    colsum = S.sum(dim=0, keepdim=True).clamp_min(eps)
     Rb = (S.T / colsum).T
     return Rf, Rb

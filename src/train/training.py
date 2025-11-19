@@ -11,6 +11,7 @@ import os
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import hydra
@@ -509,6 +510,55 @@ class PFAGCNLightningModule(LightningModule):
 # ---------------------------------------------------------------------------
 
 
+def _resolve_cfg_value(cfg: Any, key: str) -> Any:
+    """Safely pull a value from either a DictConfig or a namespace-like object."""
+
+    getter = getattr(cfg, "get", None)
+    if callable(getter):
+        try:
+            return getter(key)
+        except AttributeError:
+            pass
+    return getattr(cfg, key, None)
+
+
+_ASPECT_SUFFIXES = {
+    "MF": "_mf",
+    "MOLECULARFUNCTION": "_mf",
+    "F": "_mf",
+    "BP": "_bp",
+    "BIOLOGICALPROCESS": "_bp",
+    "P": "_bp",
+    "CC": "_cc",
+    "CELLULARCOMPONENT": "_cc",
+    "C": "_cc",
+}
+
+
+def _aspect_suffix(cfg: Any) -> str:
+    """Return the GO-aspect suffix (_mf/_bp/_cc) based on cfg.aspect."""
+
+    aspect_value = _resolve_cfg_value(cfg, "aspect")
+    if not aspect_value:
+        return ""
+    cleaned = re.sub(r"[^A-Za-z]", "", str(aspect_value)).upper()
+    return _ASPECT_SUFFIXES.get(cleaned, "")
+
+
+def _resolve_mlflow_names(cfg: Any, mlflow_cfg: Mapping[str, Any]) -> Tuple[str, str]:
+    """Derive experiment and run names with aspect-aware suffixing."""
+
+    experiment_name = (
+        mlflow_cfg.get("experiment_name")
+        or _resolve_cfg_value(cfg, "experiment_name")
+        or "pfagcn"
+    )
+    experiment_name = str(experiment_name)
+    suffix = _aspect_suffix(cfg)
+    run_name = f"{experiment_name}{suffix}"
+    return experiment_name, run_name
+
+
 class MLflowModelSaver(Callback):
     """Callback to log the trained model to MLflow once per run."""
 
@@ -531,7 +581,7 @@ class MLflowModelSaver(Callback):
             mlflow.start_run(run_id=run_id)
             started_run = True
         try:
-            mlflow.pytorch.log_model(pl_module.model, name="model")
+            mlflow.pytorch.log_model(pl_module.model, artifact_path="model")
         finally:
             if started_run:
                 mlflow.end_run()
@@ -547,10 +597,11 @@ def _prepare_mlflow_logger(cfg: DictConfig, base_dir: Path) -> MLFlowLogger:
         tracking_dir.mkdir(parents=True, exist_ok=True)
         tracking_uri = f"file:{tracking_dir.as_posix()}"
         artifact_location = artifact_location or tracking_uri
+    experiment_name, run_name = _resolve_mlflow_names(cfg, mlflow_cfg)
     logger = MLFlowLogger(
-        experiment_name=mlflow_cfg.get("experiment_name", cfg.get("experiment_name", "pfagcn")),
+        experiment_name=experiment_name,
         tracking_uri=tracking_uri,
-        run_name=mlflow_cfg.get("run_name", cfg.get("run_name", "pf-agcn")),
+        run_name=run_name,
         artifact_location=artifact_location,
     )
     resolved_cfg = OmegaConf.to_container(cfg, resolve=True)

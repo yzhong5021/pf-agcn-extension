@@ -38,8 +38,8 @@ class Output:
     logits: torch.Tensor
     protein_embeddings: torch.Tensor
     function_embeddings: torch.Tensor
-    protein_adjacency: torch.Tensor
-    function_adjacency: torch.Tensor
+    protein_adjacency: Optional[torch.Tensor]
+    function_adjacency: Optional[torch.Tensor]
 
 
 class PFAGCN(nn.Module):
@@ -438,6 +438,6 @@ class PFAGCN(nn.Module):
         device: torch.device,
         dtype: torch.dtype,
     ) -> torch.Tensor:
-        if adj is not None:
-            return adj
-        return torch.eye(size, device=device, dtype=dtype)
+        if adj is None:
+            return None
+        return adj.to(device=device, dtype=dtype)

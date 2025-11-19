@@ -55,8 +55,8 @@ adaptive_function:
   feature_dim: ${..seq_gating.shared_dim}
   attention_dim: 256
   steps: 1
-  top_p_mass: 0.9
-  temperature: 1.0
+  top_p_mass: 0.75
+  temperature: 2.0
   dropout: 0.1
 head:
   feature_dim: ${..seq_gating.shared_dim}

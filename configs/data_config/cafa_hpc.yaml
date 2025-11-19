@@ -25,9 +25,9 @@ go_prior:
   obo_path: ${..sources.go_path}
   train_split_csv: null
   top_k:
-    MF: 1024
-    BP: 2048
-    CC: 1024
+    MF: 528
+    BP: 1024
+    CC: 528
 
 batch_size: 64
 train_manifest: null

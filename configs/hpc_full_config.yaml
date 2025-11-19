@@ -10,7 +10,6 @@ defaults:
   - _self_
 
 experiment_name: "pfagcn_supercloud_test"
-run_name: "pf-agcn-hpc-test"
 
 training:
   devices: 1
@@ -18,6 +17,7 @@ training:
   precision: 16
   log_interval: 20
   num_nodes: 1
+  default_root_dir: ${hydra:runtime.output_dir}
 
 data_config:
   num_workers: 16

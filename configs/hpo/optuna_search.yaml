@@ -1,14 +1,18 @@
-# optuna_search.yaml
+defaults:
+  - override hydra/sweeper: optuna
+  - _self_
+
 # optuna hyperparameter ranges + study policy.
 
 study:
   name: pf_agcn_dev
-  storage: sqlite:///results/optuna_dev.db
+  storage: sqlite:///${system.paths.results_root}/optuna/optuna_dev.db
   direction: maximize
   sampler: tpe
   pruner: median
   n_trials: 60
   timeout_minutes: 720
+  timeout_seconds: 43200
   seed: 2025
 
 search_space:
@@ -22,6 +26,10 @@ search_space:
     low: 0.0001
     high: 0.05
     log: true
+  training.gradient_clip:
+    type: float
+    low: 0.5
+    high: 5.0
   model.seq_gating.dropout:
     type: float
     low: 0.05
@@ -29,6 +37,9 @@ search_space:
   model.seq_gating.shared_dim:
     type: categorical
     choices: [128, 192, 256, 320]
+  model.seq_final.function_dim:
+    type: categorical
+    choices: [256, 320, 384, 448]
   model.adaptive_protein.top_p_mass:
     type: float
     low: 0.6
@@ -37,10 +48,18 @@ search_space:
     type: int
     low: 2
     high: 4
+  model.adaptive_function.top_p_mass:
+    type: float
+    low: 0.65
+    high: 0.9
   model.adaptive_function.steps:
     type: int
     low: 1
     high: 3
+  model.adaptive_function.temperature:
+    type: float
+    low: 1.2
+    high: 2.5
   scheduler.warmup_epochs:
     type: int
     low: 1
@@ -54,3 +73,21 @@ callbacks:
   prune_patience: 3
   min_epochs: 6
   checkpoint_metric: fmax
+
+hydra:
+  sweeper:
+    study_name: ${hpo.study.name}
+    storage: ${hpo.study.storage}
+    direction: ${hpo.study.direction}
+    n_trials: ${hpo.study.n_trials}
+    timeout: ${hpo.study.timeout_seconds}
+    sampler:
+      _target_: optuna.samplers.TPESampler
+      seed: ${hpo.study.seed}
+      multivariate: true
+      group: true
+    pruner:
+      _target_: optuna.pruners.MedianPruner
+      n_startup_trials: ${hpo.callbacks.min_epochs}
+      n_warmup_steps: ${hpo.callbacks.prune_patience}
+    params: ${hpo.search_space}
